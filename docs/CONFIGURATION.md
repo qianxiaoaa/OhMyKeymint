@@ -472,7 +472,9 @@ certificate chain are unchanged. A named curve carried only in the PKCS#8
 algorithm identifier is restored into the SEC1 parameters.
 The reload preserves ordinary application signing keys, including passkey
 credentials. Only dedicated `ATTEST_KEY` entries tied to the previous keybox
-are retired.
+are retired. A successful identity change also refreshes pinned
+`trust.vb_key` / `trust.vb_hash` hex values from the current system Root of
+Trust so the next keymint start uses those values.
 
 ## `config.toml`
 
@@ -520,6 +522,7 @@ os_patchlevel = "auto"
 vendor_patchlevel = "auto"
 boot_patchlevel = "auto"
 # Use auto, random, or exactly 64 hexadecimal characters.
+# auto is written back as hex after the first successful resolution.
 vb_key = "auto"
 vb_hash = "auto"
 # Report verified boot and a locked bootloader when true.
@@ -839,14 +842,21 @@ This controls the 32-byte verified-boot public-key digest:
 
 - `"auto"` first reads `ro.boot.vbmeta.public_key_digest`, then tries to
   calculate the top-level vbmeta key digest, and uses a random fallback only if
-  neither source is available;
+  neither source is available. After that first resolution, OMK writes the
+  64-character hexadecimal value back into `config.toml` so later boots keep
+  the same Root of Trust;
 - `"random"` generates a new value whenever keymint starts; or
 - a 64-character hexadecimal string pins an exact value.
 
-Keep `"auto"` unless you understand the attestation profile being configured.
-Changing this field requires a keymint restart. If `"random"` was active and
-you change it back to `"auto"`, reboot the whole device so Android restores the
-original boot property before `"auto"` reads it.
+Keep `"auto"` for the first start unless you understand the attestation profile
+being configured. Changing this field requires a keymint restart. If
+`"random"` was active and you change it back to `"auto"`, reboot the whole
+device so Android restores the original boot property before `"auto"` reads it.
+
+A later keybox identity change also refreshes already-pinned hex values from
+the current system property, computed digest, or original System attestation
+hash. Explicit `"random"` is left unchanged. Restart keymint after that
+refresh so the live TA reads the new pins.
 
 #### `vb_hash`
 
@@ -854,13 +864,14 @@ This controls the 32-byte verified-boot hash:
 
 - `"auto"` first reads `ro.boot.vbmeta.digest`, then tries the original System
   attestation hash, and uses a random fallback only if neither source is
-  available;
+  available. After that first resolution, OMK writes the 64-character
+  hexadecimal value back into `config.toml`;
 - `"random"` generates a new value whenever keymint starts; or
 - a 64-character hexadecimal string pins an exact value.
 
 The same restart rule applies as for `vb_key`: restart keymint after a normal
 change, and reboot the whole device when returning from `"random"` to
-`"auto"`.
+`"auto"`. The same first-start pin and keybox-change refresh apply.
 
 #### `verified_boot_state`
 

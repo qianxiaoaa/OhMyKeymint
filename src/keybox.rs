@@ -1426,6 +1426,7 @@ fn install_keybox(
     retire_db_entries: bool,
     db_retirement_allowed: bool,
 ) -> bool {
+    let already_loaded = KEYBOX_RUNTIME_LOADED.load(Ordering::Acquire);
     let new_identity = new_keybox.identity_digest();
     let changed = {
         let mut keybox = KEYBOX.write().unwrap();
@@ -1438,6 +1439,9 @@ fn install_keybox(
 
     if changed {
         crate::keymaster::keymint_device::clear_initialized_attestation_caches();
+        if already_loaded {
+            crate::plat::vbmeta::refresh_vbmeta_pins_for_keybox_change();
+        }
     }
 
     if retire_db_entries {

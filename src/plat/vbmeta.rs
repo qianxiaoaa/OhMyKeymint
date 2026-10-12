@@ -126,6 +126,107 @@ pub fn bootstrap_vbmeta(config_file: &ConfigFile) -> Result<ResolvedTrust> {
     })
 }
 
+/// Persist `"auto"` vbmeta fields as the hex values used for this process.
+///
+/// Pinning keeps later boots on the same Root of Trust. Existing OMK KeyBlobs
+/// stay decryptable when boot properties later change.
+pub fn persist_auto_vbmeta_pins(
+    config_file: &mut ConfigFile,
+    resolved_trust: &ResolvedTrust,
+) -> Result<bool> {
+    let (pin_key, pin_hash) = auto_vbmeta_pins(config_file, resolved_trust);
+    persist_vbmeta_pins(config_file, pin_key, pin_hash)
+}
+
+fn auto_vbmeta_pins(
+    config_file: &ConfigFile,
+    resolved_trust: &ResolvedTrust,
+) -> (Option<[u8; 32]>, Option<[u8; 32]>) {
+    (
+        matches!(config_file.trust.vb_key, TrustValueSpec::Auto).then_some(resolved_trust.vb_key),
+        matches!(config_file.trust.vb_hash, TrustValueSpec::Auto).then_some(resolved_trust.vb_hash),
+    )
+}
+
+/// Refresh pinned vbmeta hex from the current system values after a keybox change.
+///
+/// The live TA boot info stays unchanged until keymint restarts. The next start
+/// reads the newly pinned values from `config.toml`.
+pub fn refresh_vbmeta_pins_for_keybox_change() {
+    match refresh_vbmeta_pins_for_keybox_change_inner() {
+        Ok(true) => log::info!(
+            "pinned vb_key/vb_hash to the current system values after a keybox identity change"
+        ),
+        Ok(false) => log::debug!(
+            "vb_key/vb_hash already match the current system values after a keybox identity change"
+        ),
+        Err(error) => {
+            log::warn!("failed to refresh pinned vbmeta digests after a keybox change: {error:#}")
+        }
+    }
+}
+
+fn refresh_vbmeta_pins_for_keybox_change_inner() -> Result<bool> {
+    let mut config_file = crate::config::load_config_file()?;
+    let slot_suffix = resetprop::read_string_property("ro.boot.slot_suffix").unwrap_or_default();
+    let vb_key = resolve_vb_key(
+        &TrustValueSpec::Auto,
+        config_file.trust.device_locked,
+        &slot_suffix,
+    );
+    let vb_hash = resolve_vb_hash(&TrustValueSpec::Auto);
+    persist_vbmeta_pins(
+        &mut config_file,
+        stable_vbmeta_pin(vb_key),
+        stable_vbmeta_pin(vb_hash),
+    )
+}
+
+fn stable_vbmeta_pin(field: ResolvedField) -> Option<[u8; 32]> {
+    field.source.is_stable_system_value().then_some(field.value)
+}
+
+fn persist_vbmeta_pins(
+    config_file: &mut ConfigFile,
+    vb_key: Option<[u8; 32]>,
+    vb_hash: Option<[u8; 32]>,
+) -> Result<bool> {
+    let (pin_key, pin_hash) = vbmeta_pins_to_write(config_file, vb_key, vb_hash);
+    if pin_key.is_none() && pin_hash.is_none() {
+        return Ok(false);
+    }
+
+    let written = crate::config::pin_vbmeta_hex(pin_key, pin_hash)?;
+    if let Some(value) = pin_key {
+        config_file.trust.vb_key = TrustValueSpec::Hex(value);
+        log::info!("pinned trust.vb_key to {}", hex::encode(value));
+    }
+    if let Some(value) = pin_hash {
+        config_file.trust.vb_hash = TrustValueSpec::Hex(value);
+        log::info!("pinned trust.vb_hash to {}", hex::encode(value));
+    }
+    Ok(written)
+}
+
+fn vbmeta_pins_to_write(
+    config_file: &ConfigFile,
+    vb_key: Option<[u8; 32]>,
+    vb_hash: Option<[u8; 32]>,
+) -> (Option<[u8; 32]>, Option<[u8; 32]>) {
+    (
+        vb_key.filter(|value| should_write_vbmeta_pin(&config_file.trust.vb_key, *value)),
+        vb_hash.filter(|value| should_write_vbmeta_pin(&config_file.trust.vb_hash, *value)),
+    )
+}
+
+fn should_write_vbmeta_pin(current: &TrustValueSpec, value: [u8; 32]) -> bool {
+    match current {
+        TrustValueSpec::Random => false,
+        TrustValueSpec::Auto => true,
+        TrustValueSpec::Hex(existing) => *existing != value,
+    }
+}
+
 pub(crate) fn write_runtime_security_patch(desired: &str, previous: Option<&str>) -> Result<()> {
     write_security_patch_with_rollback(
         resetprop::runtime_write_and_verify_property,
@@ -457,6 +558,13 @@ impl TrustValueSource {
                 | TrustValueSource::Original
                 | TrustValueSource::RandomExplicit
                 | TrustValueSource::RandomFallback
+        )
+    }
+
+    fn is_stable_system_value(self) -> bool {
+        matches!(
+            self,
+            TrustValueSource::Property | TrustValueSource::Computed | TrustValueSource::Original
         )
     }
 }
@@ -1217,6 +1325,72 @@ ro.vendor.boot_security_patch.extra = ignored
         assert!(TrustValueSource::RandomFallback.needs_sysprop_write());
         assert!(!TrustValueSource::ExplicitHex.needs_sysprop_write());
         assert!(!TrustValueSource::Property.needs_sysprop_write());
+    }
+
+    #[test]
+    fn auto_vbmeta_pins_only_replace_auto_fields() {
+        let mut config_file = ConfigFile::default();
+        let resolved = ResolvedTrust {
+            os_version: 16,
+            security_patch: "2026-06-05".into(),
+            os_patchlevel: "2026-06-05".into(),
+            vendor_patchlevel: "2026-06-05".into(),
+            boot_patchlevel: "2026-06-05".into(),
+            vb_key: [0x11; 32],
+            vb_hash: [0x22; 32],
+            vb_key_source: TrustValueSource::Property,
+            vb_hash_source: TrustValueSource::Original,
+            verified_boot_state: true,
+            device_locked: true,
+        };
+        assert_eq!(
+            auto_vbmeta_pins(&config_file, &resolved),
+            (Some([0x11; 32]), Some([0x22; 32]))
+        );
+
+        config_file.trust.vb_key = TrustValueSpec::Hex([0xaa; 32]);
+        config_file.trust.vb_hash = TrustValueSpec::Random;
+        assert_eq!(auto_vbmeta_pins(&config_file, &resolved), (None, None));
+    }
+
+    #[test]
+    fn vbmeta_pins_to_write_skips_matching_hex_and_explicit_random() {
+        let mut config_file = ConfigFile::default();
+        config_file.trust.vb_key = TrustValueSpec::Hex([0x11; 32]);
+        config_file.trust.vb_hash = TrustValueSpec::Auto;
+        assert_eq!(
+            vbmeta_pins_to_write(&config_file, Some([0x11; 32]), Some([0x22; 32])),
+            (None, Some([0x22; 32]))
+        );
+
+        config_file.trust.vb_key = TrustValueSpec::Random;
+        config_file.trust.vb_hash = TrustValueSpec::Hex([0x33; 32]);
+        assert_eq!(
+            vbmeta_pins_to_write(&config_file, Some([0x11; 32]), Some([0x22; 32])),
+            (None, Some([0x22; 32]))
+        );
+    }
+
+    #[test]
+    fn keybox_refresh_uses_only_stable_system_values() {
+        assert_eq!(
+            stable_vbmeta_pin(ResolvedField {
+                value: [0x11; 32],
+                source: TrustValueSource::Property,
+            }),
+            Some([0x11; 32])
+        );
+        assert_eq!(
+            stable_vbmeta_pin(ResolvedField {
+                value: [0x22; 32],
+                source: TrustValueSource::RandomFallback,
+            }),
+            None
+        );
+        assert!(!TrustValueSource::RandomExplicit.is_stable_system_value());
+        assert!(!TrustValueSource::ExplicitHex.is_stable_system_value());
+        assert!(TrustValueSource::Computed.is_stable_system_value());
+        assert!(TrustValueSource::Original.is_stable_system_value());
     }
 
     fn build_test_vbmeta(

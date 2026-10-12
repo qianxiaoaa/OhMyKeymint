@@ -1094,7 +1094,7 @@ fn run() -> Result<()> {
     // cannot inherit and retain the flock file description.
     let security_patch_lock = security_patch::acquire_operation_lock()
         .context("failed to lock security-patch operations during startup")?;
-    let config_file = config::bootstrap_config_file().context("failed to bootstrap config")?;
+    let mut config_file = config::bootstrap_config_file().context("failed to bootstrap config")?;
     let level = config_file
         .main
         .log_level
@@ -1114,6 +1114,9 @@ fn run() -> Result<()> {
 
     let resolved_trust =
         plat::vbmeta::bootstrap_vbmeta(&config_file).context("failed to bootstrap vbmeta")?;
+    if let Err(error) = plat::vbmeta::persist_auto_vbmeta_pins(&mut config_file, &resolved_trust) {
+        warn!("failed to pin resolved vbmeta digests; continuing with in-memory values: {error:#}");
+    }
     prepare_android_storage();
     config::install_runtime_config(config_file, resolved_trust)
         .context("failed to install runtime config")?;

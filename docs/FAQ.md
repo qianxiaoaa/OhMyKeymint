@@ -266,8 +266,10 @@ them:
 - keep the filter enabled;
 - keep Android packages blocked and unknown callers rejected;
 - leave every switch under `[intercept]` enabled;
-- keep `os_version`, all four patch-level fields, `vb_key`, and `vb_hash` on
-  their documented automatic settings; and
+- keep `os_version` and all four patch-level fields on their documented
+  automatic settings. After the first successful start, `vb_key` and
+  `vb_hash` are stored as 64-character hex values; leave those pinned values
+  in place; and
 - never change generated values under `[crypto]`.
 
 The biometric verification bypass is an insecure compatibility option, not a
@@ -330,7 +332,8 @@ and hook status when diagnosing the integration; a payload or Zygisk Next change
 also requires a reboot before new app processes can load it.
 
 If you changed `vb_key` or `vb_hash` from `"random"` back to `"auto"`, a full
-reboot is required. The automatic value cannot return until the next boot.
+reboot is required. The automatic value cannot return until the next boot, and
+the next successful `"auto"` resolution is then pinned as hex.
 
 ### What happens if I make a mistake in a configuration file?
 
@@ -406,7 +409,23 @@ size, UTF-8, validation, or write failure leaves the current keybox unchanged.
 The keybox watcher loads a successful replacement automatically, so a restart
 is normally unnecessary. Replacing the keybox preserves ordinary application
 signing keys, including passkey credentials; only dedicated `ATTEST_KEY`
-entries tied to the previous keybox are retired. Check `keymint.log` afterward.
+entries tied to the previous keybox are retired. A successful identity change
+also refreshes pinned `vb_key` / `vb_hash` hex values from the current system
+Root of Trust. Restart keymint so the live TA reads those pins. Check
+`keymint.log` afterward.
+
+### Why did TEE keys fail with InvalidKeyBlob after a later reboot?
+
+OMK binds created keys to the verified-boot Root of Trust used at generation
+time. A later boot that resolves a different `vb_key` or `vb_hash` makes old
+KeyBlobs fail with `InvalidKeyBlob`, `VerificationFailed`, or `ErrorCode(-33)`.
+
+OMK pins those fields to the 64-character hex values used for the first
+successful resolution, and refreshes the pins when the active keybox identity
+changes. Leave the pinned hex values in place. If keys already fail those
+errors, keep the pinned values, reset only
+`/data/misc/keystore/omk/data/`, and reboot so new KeyBlobs match that Root of
+Trust.
 
 ### Why does a detector say that the certificate is expired or revoked?
 

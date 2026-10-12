@@ -101,6 +101,58 @@ pub fn persist_config_file(config_file: &ConfigFile) -> Result<()> {
     persist_config_file_to_path(Path::new(CONFIG_PATH), config_file)
 }
 
+/// Replace only `trust.vb_key` / `trust.vb_hash` with resolved 32-byte digests.
+///
+/// This is intentionally separate from [`persist_config_file`]. Pinning the
+/// current Root of Trust must not overwrite generated secrets, device
+/// identity, or any unknown config data.
+pub fn pin_vbmeta_hex(vb_key: Option<[u8; 32]>, vb_hash: Option<[u8; 32]>) -> Result<bool> {
+    pin_vbmeta_hex_to_path(Path::new(CONFIG_PATH), vb_key, vb_hash)
+}
+
+fn pin_vbmeta_hex_to_path(
+    path: &Path,
+    vb_key: Option<[u8; 32]>,
+    vb_hash: Option<[u8; 32]>,
+) -> Result<bool> {
+    if vb_key.is_none() && vb_hash.is_none() {
+        return Ok(false);
+    }
+
+    let _write_guard = CONFIG_FILE_WRITE_LOCK
+        .lock()
+        .map_err(|_| anyhow!("config file write lock poisoned"))?;
+    let existing = fs::read_to_string(path)
+        .with_context(|| format!("failed to read config file {}", path.display()))?;
+    let mut table: toml::Table =
+        toml::from_str(&existing).context("refusing to overwrite invalid existing config.toml")?;
+    parse_config_file(&existing, false)
+        .context("refusing to overwrite config.toml that is not a current valid config")?;
+
+    let trust = table
+        .get_mut("trust")
+        .and_then(toml::Value::as_table_mut)
+        .ok_or_else(|| anyhow!("config is missing a valid [trust] table"))?;
+    if let Some(value) = vb_key {
+        trust.insert("vb_key".to_string(), toml::Value::String(hex::encode(value)));
+    }
+    if let Some(value) = vb_hash {
+        trust.insert(
+            "vb_hash".to_string(),
+            toml::Value::String(hex::encode(value)),
+        );
+    }
+
+    let serialized = toml::to_string_pretty(&table).context("failed to serialize config.toml")?;
+    parse_config_file(&serialized, false)
+        .context("refusing to write an invalid pinned config.toml")?;
+    if existing == serialized {
+        return Ok(false);
+    }
+    persist_config_contents_unlocked(path, &serialized)?;
+    Ok(true)
+}
+
 /// Replace only the four trust patch-level fields with a validated value.
 ///
 /// This is intentionally separate from [`persist_config_file`]. The WebUI
@@ -1457,6 +1509,75 @@ mod tests {
             );
         }
         assert_eq!(persisted.get("crypto"), original_crypto.as_ref());
+    }
+
+    #[test]
+    fn pin_vbmeta_hex_updates_only_vb_fields_and_preserves_unknown_data() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("config.toml");
+        let mut table: toml::Table =
+            toml::from_str(&toml::to_string_pretty(&ConfigFile::default()).unwrap()).unwrap();
+        table.insert(
+            "future_key".to_string(),
+            toml::Value::String("preserve-me".to_string()),
+        );
+        table
+            .get_mut("trust")
+            .and_then(toml::Value::as_table_mut)
+            .unwrap()
+            .insert(
+                "future_trust_key".to_string(),
+                toml::Value::String("preserve-me-too".to_string()),
+            );
+        let original_crypto = table.get("crypto").cloned();
+        fs::write(&path, toml::to_string_pretty(&table).unwrap()).unwrap();
+
+        let vb_key = [0x5c; 32];
+        let vb_hash = [0xa6; 32];
+        assert!(pin_vbmeta_hex_to_path(&path, Some(vb_key), Some(vb_hash)).unwrap());
+        assert!(!pin_vbmeta_hex_to_path(&path, Some(vb_key), Some(vb_hash)).unwrap());
+
+        let persisted: toml::Table = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            persisted.get("future_key").and_then(toml::Value::as_str),
+            Some("preserve-me")
+        );
+        assert_eq!(
+            persisted
+                .get("trust")
+                .and_then(toml::Value::as_table)
+                .and_then(|trust| trust.get("future_trust_key"))
+                .and_then(toml::Value::as_str),
+            Some("preserve-me-too")
+        );
+        let trust = persisted
+            .get("trust")
+            .and_then(toml::Value::as_table)
+            .unwrap();
+        let expected_key = hex::encode(vb_key);
+        let expected_hash = hex::encode(vb_hash);
+        assert_eq!(
+            trust.get("vb_key").and_then(toml::Value::as_str),
+            Some(expected_key.as_str())
+        );
+        assert_eq!(
+            trust.get("vb_hash").and_then(toml::Value::as_str),
+            Some(expected_hash.as_str())
+        );
+        assert_eq!(
+            trust.get("security_patch").and_then(toml::Value::as_str),
+            Some("auto")
+        );
+        assert_eq!(persisted.get("crypto"), original_crypto.as_ref());
+    }
+
+    #[test]
+    fn pin_vbmeta_hex_rejects_damaged_config_without_overwriting() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("config.toml");
+        fs::write(&path, "not toml").unwrap();
+        assert!(pin_vbmeta_hex_to_path(&path, Some([0x11; 32]), None).is_err());
+        assert_eq!(fs::read_to_string(path).unwrap(), "not toml");
     }
 
     #[test]

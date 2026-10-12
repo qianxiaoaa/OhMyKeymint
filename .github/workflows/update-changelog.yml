@@ -146,7 +146,7 @@ jobs:
             --arg version "$TAG_NAME" \
             --argjson versionCode "$VERSION_CODE" \
             --arg zipUrl "$RELEASE_ZIP_URL" \
-            --arg changelog "https://raw.githubusercontent.com/ITxiao6666/OhMyKeymint/changelog/changelog.md" \
+            --arg changelog "https://raw.githubusercontent.com/qianxiaoaa/OhMyKeymint/changelog/changelog.md" \
             '{
               version: $version,
               versionCode: $versionCode,
