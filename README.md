@@ -1,6 +1,6 @@
 # Oh My Keymint（第三方版本）
 
-> 本仓库是基于 [qwq233/OhMyKeymint](https://github.com/qwq233/OhMyKeymint) 修改的第三方版本，**不是官方版本，也不代表上游维护者**。本版本的问题请反馈至[本仓库](https://github.com/qianxiaoaa/OhMyKeymint/issues)。
+> 本仓库基于 [ITxiao6666/OhMyKeymint](https://github.com/ITxiao6666/OhMyKeymint) 二改构建，其上游为 [qwq233/OhMyKeymint](https://github.com/qwq233/OhMyKeymint)。**不是官方版本，也不代表上游维护者**。本版本的问题请反馈至[本仓库](https://github.com/qianxiaoaa/OhMyKeymint/issues)。
 
 面向 Android 的自定义 Keystore / KeyMint 实现，提供应用配置、Keybox 管理及配套 WebUI。
 
