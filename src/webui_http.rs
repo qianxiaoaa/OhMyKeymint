@@ -21,6 +21,18 @@ pub(crate) fn download_https_utf8<F>(
 where
     F: Fn(&Uri) -> bool,
 {
+    let bytes = download_https_bytes(requested_uri, policy, is_allowed)?;
+    String::from_utf8(bytes).map_err(|_| anyhow!("{} response is not UTF-8", policy.resource))
+}
+
+pub(crate) fn download_https_bytes<F>(
+    requested_uri: Uri,
+    policy: &DownloadPolicy,
+    is_allowed: F,
+) -> Result<Vec<u8>>
+where
+    F: Fn(&Uri) -> bool,
+{
     if !is_allowed(&requested_uri) {
         bail!("{} URL is not allowed", policy.resource);
     }
@@ -102,8 +114,7 @@ where
                 policy.max_size_label
             );
         }
-        return String::from_utf8(bytes)
-            .with_context(|| format!("{} response is not UTF-8", policy.resource));
+        return Ok(bytes);
     }
 
     unreachable!("redirect loop always returns or errors")

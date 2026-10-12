@@ -1,5 +1,5 @@
 import { exec } from 'kernelsu-alt'
-import { MAX_KEYBOX_XML_BYTES } from '../cli'
+import { MAX_KEYBOX_XML_BYTES, MAX_WALLPAPER_BYTES } from '../cli'
 import { i18n } from '../i18n'
 
 const STORAGE_ROOT = '/storage/emulated/0'
@@ -7,6 +7,7 @@ const INITIAL_PATH = `${STORAGE_ROOT}/Download`
 const MAX_LIST_ENTRIES = 512
 const MAX_LIST_OUTPUT_BYTES = 256 * 1024
 const MAX_ERROR_LENGTH = 512
+const MAX_SELECTABLE_FILE_BYTES = MAX_WALLPAPER_BYTES
 const SYSTEM_PICKER_RETURN_GRACE_MS = 2000
 
 export interface FileEntry {
@@ -17,6 +18,8 @@ export interface FileEntry {
 export interface SelectedFile {
   name: string
   contents: Uint8Array
+  /** Absolute shared-storage path when the file was chosen from the browser. */
+  path?: string
 }
 
 type Listener = () => void
@@ -42,8 +45,9 @@ function isSafeEntryName(name: string): boolean {
     && !/[\\/\u0000-\u001f\u007f]/.test(name)
 }
 
-function hasFileExtension(name: string, extension: string): boolean {
-  return name.toLowerCase().endsWith(`.${extension}`)
+function hasFileExtension(name: string, extensions: readonly string[]): boolean {
+  const lower = name.toLowerCase()
+  return extensions.some(extension => lower.endsWith(`.${extension}`))
 }
 
 function joinStoragePath(parent: string, name: string): string | null {
@@ -72,7 +76,7 @@ function decodeBase64(value: string, maxBytes: number): Uint8Array {
   return bytes
 }
 
-function parseListing(value: string, extension: string): FileEntry[] {
+function parseListing(value: string, extensions: readonly string[]): FileEntry[] {
   const bytes = decodeBase64(value, MAX_LIST_OUTPUT_BYTES)
   const entries: FileEntry[] = []
   let offset = 0
@@ -100,7 +104,7 @@ function parseListing(value: string, extension: string): FileEntry[] {
       throw new Error('storage command returned an invalid file name')
     }
     if (!isSafeEntryName(name)) throw new Error('storage command returned an invalid file name')
-    if (kind === 0x66 && !hasFileExtension(name, extension)) {
+    if (kind === 0x66 && !hasFileExtension(name, extensions)) {
       throw new Error('storage command returned an invalid file')
     }
     entries.push({ name, isDirectory: kind === 0x64 })
@@ -122,8 +126,8 @@ function shellExtensionPattern(extension: string): string {
   }).join('')
 }
 
-function buildListCommand(path: string, extension: string): string {
-  const extensionPattern = shellExtensionPattern(extension)
+function buildListCommand(path: string, extensions: readonly string[]): string {
+  const extensionPattern = extensions.map(extension => `*.${shellExtensionPattern(extension)}`).join('|')
   const script = [
     `root=${shellQuote(STORAGE_ROOT)}`,
     `target=${shellQuote(path)}`,
@@ -153,7 +157,7 @@ function buildListCommand(path: string, extension: string): string {
     String.raw`    printf '%s\000%s\000' d "$name"`,
     '  elif [ -f "$entry" ]; then',
     '    case "$name" in',
-    `      *.${extensionPattern}) printf '%s\\000%s\\000' f "$name" ;;`,
+    `      ${extensionPattern}) printf '%s\\000%s\\000' f "$name" ;;`,
     '      *) continue ;;',
     '    esac',
     '  else',
@@ -204,8 +208,8 @@ function buildReadCommand(path: string, maxBytes: number): string {
   return `/system/bin/sh -c ${shellQuote(script)}`
 }
 
-async function readBrowserFile(file: File, extension: string, maxBytes: number): Promise<SelectedFile> {
-  if (!hasFileExtension(file.name, extension)) throw new Error(i18n.t('prompt_keybox_xml_required'))
+async function readBrowserFile(file: File, extensions: readonly string[], maxBytes: number): Promise<SelectedFile> {
+  if (!hasFileExtension(file.name, extensions)) throw new Error(i18n.t('prompt_keybox_xml_required'))
   if (file.size > maxBytes) throw new Error(i18n.t('prompt_keybox_too_large'))
   const contents = new Uint8Array(await file.slice(0, maxBytes + 1).arrayBuffer())
   if (contents.byteLength > maxBytes) throw new Error(i18n.t('prompt_keybox_too_large'))
@@ -213,13 +217,13 @@ async function readBrowserFile(file: File, extension: string, maxBytes: number):
 }
 
 async function pickWithSystem(
-  extension: string,
+  extensions: readonly string[],
   maxBytes: number,
 ): Promise<{ supported: boolean, selected: SelectedFile | null }> {
   return new Promise((resolve, reject) => {
     const input = document.createElement('input')
     input.type = 'file'
-    input.accept = '*/*'
+    input.accept = extensions.map(extension => `.${extension}`).join(',')
     input.setAttribute('aria-hidden', 'true')
     Object.assign(input.style, {
       position: 'fixed', width: '1px', height: '1px', opacity: '0', pointerEvents: 'none',
@@ -256,7 +260,7 @@ async function pickWithSystem(
       const file = input.files?.[0]
       if (!file) return finish(null)
       clearTimer()
-      void readBrowserFile(file, extension, maxBytes).then(finish, fail)
+      void readBrowserFile(file, extensions, maxBytes).then(finish, fail)
     }
     const scheduleCancel = (): void => {
       if (settled || !pickerWasBackgrounded) return
@@ -301,8 +305,9 @@ export class FileSelector {
   // after returning focus; opening a second input during that window loses
   // the first provider callback and can resolve the wrong request.
   #systemPickerActive = false
-  #extension = 'xml'
+  #extensions: string[] = ['xml']
   #maxBytes = MAX_KEYBOX_XML_BYTES
+  #pathOnly = false
   #pathStack: string[] = [STORAGE_ROOT]
   #open = false
   #loading = false
@@ -322,8 +327,11 @@ export class FileSelector {
     return () => this.#listeners.delete(listener)
   }
 
-  async getSystemFileContent(extension: string, maxBytes = MAX_KEYBOX_XML_BYTES): Promise<SelectedFile | null> {
-    const normalized = this.#validate(extension, maxBytes)
+  async getSystemFileContent(
+    extensions: string | readonly string[],
+    maxBytes = MAX_KEYBOX_XML_BYTES,
+  ): Promise<SelectedFile | null> {
+    const normalized = this.#validate(extensions, maxBytes)
     if (this.#systemPickerActive) return null
     this.#systemPickerActive = true
     let systemResult: { supported: boolean, selected: SelectedFile | null }
@@ -336,11 +344,33 @@ export class FileSelector {
     return this.getFileContent(normalized, maxBytes)
   }
 
-  getFileContent(extension: string, maxBytes = MAX_KEYBOX_XML_BYTES): Promise<SelectedFile | null> {
-    const normalized = this.#validate(extension, maxBytes)
+  getFileContent(
+    extensions: string | readonly string[],
+    maxBytes = MAX_KEYBOX_XML_BYTES,
+  ): Promise<SelectedFile | null> {
+    return this.#openBrowser(extensions, maxBytes, false)
+  }
+
+  /** Open the in-app browser and return the selected file's path without
+   * reading its contents (used for wallpapers, which the native helper copies
+   * from the shared-storage path). */
+  getLocalFilePath(
+    extensions: string | readonly string[],
+    maxBytes = MAX_KEYBOX_XML_BYTES,
+  ): Promise<SelectedFile | null> {
+    return this.#openBrowser(extensions, maxBytes, true)
+  }
+
+  #openBrowser(
+    extensions: string | readonly string[],
+    maxBytes: number,
+    pathOnly: boolean,
+  ): Promise<SelectedFile | null> {
+    const normalized = this.#validate(extensions, maxBytes)
     this.cancel()
-    this.#extension = normalized
+    this.#extensions = normalized
     this.#maxBytes = maxBytes
+    this.#pathOnly = pathOnly
     this.#currentPath = INITIAL_PATH
     this.#pathStack = [STORAGE_ROOT, INITIAL_PATH]
     this.#entries = []
@@ -363,7 +393,7 @@ export class FileSelector {
     this.#status = i18n.t('replace_keybox_storage_loading')
     this.#emit()
     try {
-      const result = await pickWithSystem(this.#extension, this.#maxBytes)
+      const result = await pickWithSystem(this.#extensions, this.#maxBytes)
       if (this.#pending?.token !== pending.token || !result.supported) return
       if (result.selected) this.#finish(result.selected)
     } catch (error) {
@@ -389,6 +419,8 @@ export class FileSelector {
       this.#currentPath = path
       this.#pathStack.push(path)
       void this.#listDirectory(path, pending.token)
+    } else if (this.#pathOnly) {
+      this.#finish({ name: entry.name, path, contents: new Uint8Array() })
     } else {
       void this.#readLocalFile(path, entry.name, pending.token)
     }
@@ -410,13 +442,17 @@ export class FileSelector {
     }
   }
 
-  #validate(extension: string, maxBytes: number): string {
-    const normalized = extension.trim().replace(/^\./, '').toLowerCase()
-    if (!/^[a-z0-9]{1,16}$/.test(normalized)) throw new Error('Invalid file extension')
-    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_KEYBOX_XML_BYTES) {
+  #validate(extensions: string | readonly string[], maxBytes: number): string[] {
+    const list = (typeof extensions === 'string' ? [extensions] : [...extensions])
+      .map(extension => extension.trim().replace(/^\./, '').toLowerCase())
+    if (list.length === 0 || list.length > 8) throw new Error('Invalid file extension')
+    if (list.some(extension => !/^[a-z0-9]{1,16}$/.test(extension))) {
+      throw new Error('Invalid file extension')
+    }
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_SELECTABLE_FILE_BYTES) {
       throw new Error('Invalid file size limit')
     }
-    return normalized
+    return list
   }
 
   async #loadInitialPath(token: number): Promise<void> {
@@ -435,10 +471,10 @@ export class FileSelector {
     this.#entries = []
     this.#emit()
     try {
-      const result = await exec(buildListCommand(path, this.#extension))
+      const result = await exec(buildListCommand(path, this.#extensions))
       if (this.#pending?.token !== token || request !== this.#request) return false
       if (result.errno !== 0) throw commandError(result.errno, result.stderr)
-      this.#entries = parseListing(result.stdout, this.#extension)
+      this.#entries = parseListing(result.stdout, this.#extensions)
       this.#status = this.#entries.length === 0 ? i18n.t('replace_keybox_storage_empty') : ''
       this.#loading = false
       this.#emit()
@@ -484,6 +520,7 @@ export class FileSelector {
     this.#request++
     this.#open = false
     this.#loading = false
+    this.#pathOnly = false
     this.#emit()
     pending.resolve(value)
   }

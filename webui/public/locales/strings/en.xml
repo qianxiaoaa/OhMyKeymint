@@ -154,6 +154,14 @@
     <string name="tools_app_targets_desc">Choose the apps whose package names you want to add.</string>
     <string name="tools_key_management">Key management</string>
     <string name="tools_keybox_desc">Select an XML file to replace the current Keybox</string>
+    <string name="tools_update_keybox">Update Keybox from server</string>
+    <string name="tools_update_keybox_desc">Fetch the latest signed Keybox from the configured mirrors</string>
+    <string name="prompt_keybox_update_updated">Keybox updated from the server.</string>
+    <string name="prompt_keybox_update_uptodate">Keybox is already up to date.</string>
+    <string name="prompt_keybox_update_disabled">Remote Keybox is disabled in the configuration.</string>
+    <string name="settings_wallpaper">Wallpaper</string>
+    <string name="settings_wallpaper_desc">Choose a local image as the WebUI background</string>
+    <string name="prompt_wallpaper_updated">Wallpaper updated.</string>
     <string name="tools_adb_disabler">ADB Disabler</string>
     <string name="prompt_adb_disabler_applied">ADB Disabler settings applied. Some changes take effect after reboot.</string>
     <string name="prompt_adb_disabler_disabled">ADB Disabler disabled. Existing changes remain until the device state is changed.</string>

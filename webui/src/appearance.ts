@@ -196,6 +196,7 @@ export class AppearanceController {
   #paletteStyle: PaletteStyle
   #colorSpec: ColorSpec
   #interfaceScale = 100
+  #wallpaperUrl: string | null = null
   #systemTheme = window.matchMedia('(prefers-color-scheme: dark)')
   #listeners: AppearanceListener[] = []
   #systemColors: Partial<Record<ResolvedMode, string>> = {}
@@ -321,6 +322,21 @@ export class AppearanceController {
     this.#interfaceScale = normalized
     this.#storeAppearance()
     this.#apply()
+    this.#emit()
+  }
+
+  /** Apply the WebUI global background image from a local object URL. */
+  setWallpaperUrl(url: string | null): void {
+    if (url === this.#wallpaperUrl) return
+    this.#wallpaperUrl = url
+    const root = document.documentElement
+    if (url) {
+      root.style.setProperty('--omk-wallpaper', `url("${url}")`)
+      root.dataset.wallpaper = 'true'
+    } else {
+      root.style.removeProperty('--omk-wallpaper')
+      delete root.dataset.wallpaper
+    }
     this.#emit()
   }
 

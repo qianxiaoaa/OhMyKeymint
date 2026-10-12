@@ -62,6 +62,11 @@ Each `base_urls` entry may be either a live PHP API base or a static mirror root
 The client tries both forms per mirror, so one ordered list covers both. See
 `docs/CONFIGURATION.md` for the full field reference.
 
+Besides the scheduled refresh, the module WebUI exposes an **Update Keybox**
+action that triggers one immediate refresh through the same flow. It is shown
+only while `enabled` is true and reports whether a newer keybox was applied or
+the active one was already current.
+
 ## Client change points
 
 Two things must be set on the client side.

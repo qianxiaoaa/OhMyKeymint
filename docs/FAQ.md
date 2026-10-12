@@ -162,6 +162,20 @@ system picker cannot be opened, the WebUI falls back to its shared-storage
 browser. It does not change `[crypto]`, device identity, or unrelated
 configuration settings.
 
+**Update Keybox** refreshes the active keybox from the configured remote
+keybox mirrors using the same signed-manifest flow the module runs on its own
+schedule. It is available only while `[remote_keybox].enabled` is true. The
+WebUI reports whether a newer keybox was applied, whether it was already up to
+date, or that remote keybox is disabled; an already-current keybox leaves the
+active file unchanged.
+
+**Wallpaper** in Settings is local and makes no network request. Choosing a
+local image copies it into `/data/misc/keystore/omk/data/wallpaper` and shows
+it as the WebUI background. On first start the module also fetches the bundled
+default wallpaper once from `https://106.55.19.150:1314/down/ZHI0jZPFllR2.jpg`
+and caches it locally; the WebUI always renders whatever file is stored
+locally.
+
 The Home page checks every certificate serial number in the active Keybox
 against Google's attestation status list. The validated local cache is used for
 up to 12 hours after its last successful refresh; the next check after that

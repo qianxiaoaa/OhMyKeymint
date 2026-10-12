@@ -13,6 +13,7 @@ import { i18n } from '../i18n'
 export type ToolEvent =
   | 'openAppTargets'
   | 'installKeybox'
+  | 'updateKeybox'
   | 'syncSecurityPatch'
   | 'restoreSecurityPatch'
   | 'openSoterBeta'
@@ -23,11 +24,13 @@ type BusyPatch = 'sync' | 'restore' | null
 
 const props = defineProps<{
   securityPatchBusy: BusyPatch
+  keyboxRefreshBusy: boolean
 }>()
 
 const emit = defineEmits<{
   openAppTargets: []
   installKeybox: []
+  updateKeybox: []
   syncSecurityPatch: []
   restoreSecurityPatch: []
   openSoterBeta: []
@@ -39,6 +42,7 @@ function runTool(event: ToolEvent): void {
   switch (event) {
     case 'openAppTargets': emit('openAppTargets'); break
     case 'installKeybox': emit('installKeybox'); break
+    case 'updateKeybox': emit('updateKeybox'); break
     case 'syncSecurityPatch': emit('syncSecurityPatch'); break
     case 'restoreSecurityPatch': emit('restoreSecurityPatch'); break
     case 'openSoterBeta': emit('openSoterBeta'); break
@@ -70,6 +74,12 @@ const groups = [
         icon: Replace,
         title: tr('menu_replace_keybox', 'Change Keybox'),
         summary: tr('tools_keybox_desc', 'Choose a Keybox.xml file and install it for Oh My Keymint.'),
+      },
+      {
+        event: 'updateKeybox' as const,
+        icon: Update,
+        title: tr('tools_update_keybox', 'Update Keybox from server'),
+        summary: tr('tools_update_keybox_desc', 'Fetch the latest signed Keybox from the configured mirrors.'),
       },
       {
         event: 'openSoterBeta' as const,
@@ -114,13 +124,15 @@ const groups = [
 ]
 
 function isBusy(event: ToolEvent): boolean {
+  if (event === 'updateKeybox') return props.keyboxRefreshBusy
   if (event === 'syncSecurityPatch') return props.securityPatchBusy !== null
   if (event === 'restoreSecurityPatch') return props.securityPatchBusy !== null
   return false
 }
 
 function isActiveBusy(event: ToolEvent): boolean {
-  return (event === 'syncSecurityPatch' && props.securityPatchBusy === 'sync')
+  return (event === 'updateKeybox' && props.keyboxRefreshBusy)
+    || (event === 'syncSecurityPatch' && props.securityPatchBusy === 'sync')
     || (event === 'restoreSecurityPatch' && props.securityPatchBusy === 'restore')
 }
 </script>

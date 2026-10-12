@@ -59,6 +59,7 @@ const teeStatus = ref<TeeStatus>('loading')
 const securityPatch = ref<string | null>(null)
 const spoofedDevice = ref<string | null | undefined>(undefined)
 const securityPatchBusy = ref<'sync' | 'restore' | null>(null)
+const keyboxRefreshBusy = ref(false)
 const soterOpen = ref(false)
 const soterHalOpen = ref(false)
 const pifOpen = ref(false)
@@ -85,6 +86,10 @@ let keydownListener: ((event: KeyboardEvent) => void) | null = null
 let pageHistoryActive = false
 const overlayHistory = new Set<string>()
 let targetsRefreshTimer: number | null = null
+let wallpaperRetryTimer: number | null = null
+let wallpaperObjectUrl: string | null = null
+
+const WALLPAPER_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp'] as const
 let navigationElement: HTMLElement | null = null
 let navigationPointerId: number | null = null
 let navigationPointerStartX = 0
@@ -443,6 +448,71 @@ async function installKeybox(): Promise<void> {
   }
 }
 
+function wallpaperMime(bytes: Uint8Array): string {
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return 'image/jpeg'
+  }
+  if (bytes.length >= 4 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) {
+    return 'image/png'
+  }
+  if (bytes.length >= 12 && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) {
+    return 'image/webp'
+  }
+  return 'application/octet-stream'
+}
+
+function applyWallpaper(url: string | null): void {
+  if (wallpaperObjectUrl !== null && wallpaperObjectUrl !== url) {
+    URL.revokeObjectURL(wallpaperObjectUrl)
+  }
+  wallpaperObjectUrl = url
+  appearance.setWallpaperUrl(url)
+}
+
+async function refreshWallpaper(): Promise<void> {
+  if (isDev()) return
+  try {
+    const bytes = await cli.getWallpaper()
+    if (bytes !== null && bytes.byteLength > 0) {
+      const image = new Uint8Array(bytes.byteLength)
+      image.set(bytes)
+      applyWallpaper(URL.createObjectURL(new Blob([image], { type: wallpaperMime(image) })))
+    } else {
+      applyWallpaper(null)
+    }
+  } catch (error) {
+    console.error('Unable to load the WebUI wallpaper:', error)
+  }
+}
+
+async function changeWallpaper(): Promise<void> {
+  try {
+    const selected = await fileSelector.getLocalFilePath([...WALLPAPER_EXTENSIONS])
+    if (!selected?.path) return
+    if (!isDev()) await cli.setWallpaperFromPath(selected.path)
+    notify(i18n.t('prompt_wallpaper_updated'))
+    await refreshWallpaper()
+  } catch (error) {
+    notify(error instanceof Error ? error.message : String(error), true)
+  }
+}
+
+async function updateKeybox(): Promise<void> {
+  if (keyboxRefreshBusy.value) return
+  keyboxRefreshBusy.value = true
+  try {
+    const result = isDev() ? 'updated' : await cli.refreshRemoteKeybox()
+    if (result === 'disabled') notify(i18n.t('prompt_keybox_update_disabled'), true)
+    else if (result === 'up_to_date') notify(i18n.t('prompt_keybox_update_uptodate'))
+    else notify(i18n.t('prompt_keybox_update_updated'))
+    await Promise.all([refreshIdentity(true), refreshDiagnostics()])
+  } catch (error) {
+    notify(error instanceof Error ? error.message : String(error), true)
+  } finally {
+    keyboxRefreshBusy.value = false
+  }
+}
+
 async function syncPatch(restore: boolean): Promise<void> {
   if (securityPatchBusy.value !== null) return
   securityPatchBusy.value = restore ? 'restore' : 'sync'
@@ -468,6 +538,7 @@ function onTool(event: ToolEvent): void {
   switch (event) {
     case 'openAppTargets': openTargets(); break
     case 'installKeybox': void chooseKeybox(); break
+    case 'updateKeybox': void updateKeybox(); break
     case 'syncSecurityPatch': void syncPatch(false); break
     case 'restoreSecurityPatch': void syncPatch(true); break
     case 'openSoterBeta': soterOpen.value = true; break
@@ -510,12 +581,29 @@ onMounted(async () => {
     }
   })
   await Promise.all([reloadApps(true), refreshIdentity(), refreshDiagnostics()])
+  void refreshWallpaper()
+  // The daemon caches the default wallpaper shortly after boot; retry once so
+  // a first-run WebUI picks it up without reopening the page.
+  if (!isDev()) {
+    wallpaperRetryTimer = window.setTimeout(() => {
+      wallpaperRetryTimer = null
+      void refreshWallpaper()
+    }, 25000)
+  }
 })
 
 onBeforeUnmount(() => {
   if (targetsRefreshTimer !== null) {
     window.clearTimeout(targetsRefreshTimer)
     targetsRefreshTimer = null
+  }
+  if (wallpaperRetryTimer !== null) {
+    window.clearTimeout(wallpaperRetryTimer)
+    wallpaperRetryTimer = null
+  }
+  if (wallpaperObjectUrl !== null) {
+    URL.revokeObjectURL(wallpaperObjectUrl)
+    wallpaperObjectUrl = null
   }
   document.removeEventListener('visibilitychange', refreshTargetsWhenForegrounded)
   window.removeEventListener('focus', refreshTargetsWhenForegrounded)
@@ -624,8 +712,10 @@ watch(keyboxOpen, open => {
         <ToolsView
           v-show="pageIndex === 1"
           :security-patch-busy="securityPatchBusy"
+          :keybox-refresh-busy="keyboxRefreshBusy"
           @open-app-targets="onTool('openAppTargets')"
           @install-keybox="onTool('installKeybox')"
+          @update-keybox="onTool('updateKeybox')"
           @sync-security-patch="onTool('syncSecurityPatch')"
           @restore-security-patch="onTool('restoreSecurityPatch')"
           @open-soter-beta="onTool('openSoterBeta')"
@@ -639,6 +729,7 @@ watch(keyboxOpen, open => {
           ref="settingsView"
           @overlay-open="onSettingsOverlayOpen"
           @overlay-close="onSettingsOverlayClose"
+          @change-wallpaper="changeWallpaper"
         />
       </Transition>
     </main>

@@ -41,6 +41,7 @@ pub mod selinux;
 pub mod soter_beta;
 pub mod soter_hal;
 pub mod utils;
+pub mod wallpaper;
 pub mod watchdog;
 pub mod webui_activity;
 pub mod webui_http;
@@ -615,6 +616,67 @@ fn handle_webui_keybox_command() -> Option<Result<String, String>> {
             }
             Some(webui_keybox_revocation_status())
         }
+        "--webui-refresh-remote-keybox" => {
+            if args.next().is_some() {
+                return Some(Err(
+                    "--webui-refresh-remote-keybox does not accept arguments".to_string(),
+                ));
+            }
+            Some(webui_refresh_remote_keybox())
+        }
+        _ => None,
+    }
+}
+
+fn webui_refresh_remote_keybox() -> Result<String, String> {
+    let enabled = config::config()
+        .read()
+        .map(|config| config.remote_keybox.enabled)
+        .unwrap_or(false);
+    if !enabled {
+        return Ok("disabled".to_string());
+    }
+    match remote_keybox::refresh_once() {
+        Ok(true) => Ok("updated".to_string()),
+        Ok(false) => Ok("up_to_date".to_string()),
+        Err(error) => Err(format!("{error:#}")),
+    }
+}
+
+fn handle_webui_wallpaper_command() -> Option<Result<String, String>> {
+    let mut args = std::env::args();
+    let _program = args.next();
+    match args.next()?.as_str() {
+        "--webui-get-wallpaper" => {
+            if args.next().is_some() {
+                return Some(Err(
+                    "--webui-get-wallpaper does not accept arguments".to_string()
+                ));
+            }
+            Some(wallpaper::load_wallpaper_base64().map_err(|error| format!("{error:#}")))
+        }
+        "--webui-set-wallpaper-from-path-base64" => {
+            let Some(payload) = args.next() else {
+                return Some(Err(
+                    "--webui-set-wallpaper-from-path-base64 requires one payload".to_string(),
+                ));
+            };
+            if payload.len() > 4096 || args.next().is_some() {
+                return Some(Err("invalid wallpaper path arguments".to_string()));
+            }
+            let path = BASE64_STANDARD
+                .decode(payload.as_bytes())
+                .map_err(|error| format!("invalid wallpaper path encoding: {error}"))
+                .and_then(|bytes| {
+                    String::from_utf8(bytes).map_err(|_| "wallpaper path is not valid UTF-8".to_string())
+                });
+            Some(match path {
+                Ok(path) => wallpaper::store_from_path(&path)
+                    .map(|()| "wallpaper_saved".to_string())
+                    .map_err(|error| format!("{error:#}")),
+                Err(error) => Err(error),
+            })
+        }
         _ => None,
     }
 }
@@ -1064,6 +1126,17 @@ fn main() {
         return;
     }
 
+    if let Some(result) = handle_webui_wallpaper_command() {
+        match result {
+            Ok(output) => println!("{output}"),
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(2);
+            }
+        }
+        return;
+    }
+
     // A stale WebUI must not start the daemon after a helper command is removed.
     if std::env::args()
         .nth(1)
@@ -1153,6 +1226,7 @@ fn run() -> Result<()> {
 
     keybox::initialize().context("failed to initialize keybox runtime")?;
     remote_keybox::spawn_worker();
+    wallpaper::spawn_default_fetcher();
 
     info!("setting uid/gid={} role=keystore", KEYSTORE_UID);
     set_keystore_identity()?;

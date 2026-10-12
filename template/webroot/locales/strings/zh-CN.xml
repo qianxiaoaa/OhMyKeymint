@@ -154,6 +154,14 @@
     <string name="tools_app_targets_desc">选择需要添加包名的应用</string>
     <string name="tools_key_management">密钥管理</string>
     <string name="tools_keybox_desc">选择 XML 文件替换当前 Keybox</string>
+    <string name="tools_update_keybox">从服务器更新 Keybox</string>
+    <string name="tools_update_keybox_desc">从已配置的镜像获取最新签名 Keybox</string>
+    <string name="prompt_keybox_update_updated">已从服务器更新 Keybox。</string>
+    <string name="prompt_keybox_update_uptodate">Keybox 已是最新。</string>
+    <string name="prompt_keybox_update_disabled">配置中已禁用远程 Keybox。</string>
+    <string name="settings_wallpaper">壁纸</string>
+    <string name="settings_wallpaper_desc">选择本地图片作为 WebUI 背景</string>
+    <string name="prompt_wallpaper_updated">壁纸已更新。</string>
     <string name="tools_adb_disabler">ADB 禁用器</string>
     <string name="prompt_adb_disabler_applied">ADB 禁用器设置已应用，部分更改将在重启后生效。</string>
     <string name="prompt_adb_disabler_disabled">ADB 禁用器已停用，当前更改会保留，直到设备状态被手动更改。</string>

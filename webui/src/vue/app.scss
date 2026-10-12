@@ -175,6 +175,16 @@ body {
   font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
   -webkit-tap-highlight-color: transparent;
 }
+
+/* User-selected WebUI wallpaper. It sits behind the page surface, so it shows
+ * through the page margins, section spacing and translucent bars. */
+:root[data-wallpaper='true'] body {
+  background-image: var(--omk-wallpaper, none);
+  background-attachment: fixed;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
+}
 body::before,
 body::after {
   content: '';

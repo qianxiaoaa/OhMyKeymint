@@ -29,6 +29,8 @@ const MAX_PIF_FINGERPRINT_LENGTH = 1024
 const PIF_PRODUCT_RE = /^[a-z0-9][a-z0-9_]*$/
 
 export const MAX_KEYBOX_XML_BYTES = 64 * 1024
+export const MAX_WALLPAPER_BYTES = 8 * 1024 * 1024
+const MAX_WALLPAPER_BASE64_BYTES = Math.ceil(MAX_WALLPAPER_BYTES / 3) * 4 + 16
 
 export interface PifDevice {
   model: string
@@ -408,6 +410,23 @@ function encodeBase64Utf8(value: string): string {
   return encodeBase64Bytes(new TextEncoder().encode(value))
 }
 
+function decodeBase64Bytes(value: string, maxBytes: number): Uint8Array {
+  if (value.length === 0) return new Uint8Array(0)
+  if (value.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(value)) {
+    throw new Error('OMK returned invalid base64 data')
+  }
+  let binary: string
+  try {
+    binary = atob(value)
+  } catch {
+    throw new Error('OMK returned invalid base64 data')
+  }
+  if (binary.length > maxBytes) throw new Error('OMK returned oversized base64 data')
+  const bytes = new Uint8Array(binary.length)
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
+  return bytes
+}
+
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`
 }
@@ -526,6 +545,34 @@ export class Cli {
       throw new Error('OMK returned an invalid Keybox revocation status')
     }
     return output
+  }
+
+  async refreshRemoteKeybox(): Promise<'updated' | 'up_to_date' | 'disabled'> {
+    const { keymint } = await this.#getHelperPaths()
+    const output = await this.#run(keymint, ['--webui-refresh-remote-keybox'], 256)
+    if (output !== 'updated' && output !== 'up_to_date' && output !== 'disabled') {
+      throw new Error('OMK returned an invalid remote Keybox refresh result')
+    }
+    return output
+  }
+
+  async getWallpaper(): Promise<Uint8Array | null> {
+    const { keymint } = await this.#getHelperPaths()
+    const output = await this.#run(keymint, ['--webui-get-wallpaper'], MAX_WALLPAPER_BASE64_BYTES)
+    if (output.length === 0) return null
+    return decodeBase64Bytes(output, MAX_WALLPAPER_BYTES)
+  }
+
+  async setWallpaperFromPath(path: string): Promise<void> {
+    if (!path.startsWith('/storage/emulated/0/') || /[\u0000-\u001f\u007f]/.test(path)) {
+      throw new Error('Invalid wallpaper path')
+    }
+    const payload = encodeBase64Utf8(path)
+    const { keymint } = await this.#getHelperPaths()
+    const output = await this.#run(keymint, ['--webui-set-wallpaper-from-path-base64', payload], 256)
+    if (output !== 'wallpaper_saved') {
+      throw new Error('OMK returned an unexpected wallpaper result')
+    }
   }
 
   async getSoterBeta(): Promise<SoterBetaState> {
