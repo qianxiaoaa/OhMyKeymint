@@ -3,6 +3,13 @@ name: Update Changelog and Metadata
 on:
   release:
     types: ["published", "edited"]
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: Release tag to sync onto the changelog branch
+        required: false
+        type: string
+        default: ""
 
 jobs:
   update-changelog:
@@ -11,7 +18,7 @@ jobs:
       contents: write
 
     env:
-      GH_TOKEN: ${{ secrets.PAT }}
+      GH_TOKEN: ${{ secrets.PAT || github.token }}
       SOURCE_REPO: ${{ github.repository }}
       TARGET_REPO: KernelSU-Modules-Repo/oh_my_keymint
 
@@ -21,14 +28,23 @@ jobs:
         with:
           ref: master
           fetch-depth: 0
-          token: ${{ secrets.PAT }}
+          token: ${{ secrets.PAT || github.token }}
 
       - name: Wait for source release assets
         id: release_info
         env:
           RELEASE_ID: ${{ github.event.release.id }}
+          TAG_NAME_INPUT: ${{ github.event.inputs.tag_name }}
         run: |
           set -euo pipefail
+
+          if [ -z "${RELEASE_ID:-}" ]; then
+            if [ -n "${TAG_NAME_INPUT:-}" ]; then
+              RELEASE_ID=$(gh api "repos/$SOURCE_REPO/releases/tags/$TAG_NAME_INPUT" --jq '.id')
+            else
+              RELEASE_ID=$(gh api "repos/$SOURCE_REPO/releases/latest" --jq '.id')
+            fi
+          fi
 
           RELEASE_JSON="$RUNNER_TEMP/source-release.json"
           ASSET_DIR="$RUNNER_TEMP/source-release-assets"
@@ -124,7 +140,7 @@ jobs:
           ref: changelog
           path: changelog-branch
           fetch-depth: 0
-          token: ${{ secrets.PAT }}
+          token: ${{ secrets.PAT || github.token }}
 
       - name: Update changelog branch
         id: changelog
@@ -137,8 +153,8 @@ jobs:
           set -euo pipefail
 
           cd changelog-branch
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "qianxiaoaa"
+          git config user.email "qianxiaoaa@users.noreply.github.com"
 
           jq -r '.body // ""' "$SOURCE_RELEASE_JSON" > changelog.md
 
@@ -158,14 +174,26 @@ jobs:
           if git diff --cached --quiet; then
             echo "No changelog changes to commit."
           else
-            git commit -m "Update $TAG_NAME"
+            git commit --no-verify --no-gpg-sign -m "Update $TAG_NAME"
           fi
 
           sync_commit=$(git rev-parse HEAD)
           git push origin "HEAD:changelog" --force
           printf 'sync_commit=%s\n' "$sync_commit" >> "$GITHUB_OUTPUT"
 
+      - name: Check target repository access
+        id: target
+        run: |
+          set -euo pipefail
+          if gh api "repos/$TARGET_REPO" --jq '.full_name' >/dev/null 2>&1; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping $TARGET_REPO sync; the repository is not accessible."
+          fi
+
       - name: Sync target branch and tag
+        if: steps.target.outputs.available == 'true'
         env:
           SYNC_COMMIT: ${{ steps.changelog.outputs.sync_commit }}
           TAG_NAME: ${{ steps.release_info.outputs.tag_name }}
@@ -214,6 +242,7 @@ jobs:
           fi
 
       - name: Sync target release and assets
+        if: steps.target.outputs.available == 'true'
         env:
           SOURCE_RELEASE_JSON: ${{ steps.release_info.outputs.source_release_json }}
           ASSET_DIR: ${{ steps.release_info.outputs.asset_dir }}

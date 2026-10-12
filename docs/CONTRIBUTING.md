@@ -182,8 +182,10 @@ Asia/Shanghai (`0 18 * * *` UTC) and on `workflow_dispatch`:
    [`update-changelog.yml`](../.github/workflows/update-changelog.yml) then
    refreshes the `changelog` branch.
 
-The nightly job and changelog update both require `secrets.PAT` so GitHub
-commits and releases are authored by `qianxiaoaa`.
+The nightly job and changelog update use `secrets.PAT` when it is set.
+When it is absent, they use `github.token` for this repository. Commits
+keep the `qianxiaoaa` identity. Sync to `KernelSU-Modules-Repo/oh_my_keymint`
+runs only when that repository is reachable.
 
 Backend choice still follows the OMK routing invariants above. Do not infer a
 backend from a key, descriptor, `KEY_ID`, `GRANT`, alias, wrapping key, or

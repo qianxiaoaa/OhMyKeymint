@@ -28,22 +28,12 @@ jobs:
       ohmykeymint_sha: ${{ steps.sync.outputs.ohmykeymint_sha }}
       yypm_sha: ${{ steps.sync.outputs.yypm_sha }}
     steps:
-      - name: Require PAT
-        env:
-          PAT: ${{ secrets.PAT }}
-        run: |
-          set -euo pipefail
-          if [ -z "$PAT" ]; then
-            echo "::error::secrets.PAT is required so commits and releases are authored by qianxiaoaa"
-            exit 1
-          fi
-
       - name: Checkout master
         uses: actions/checkout@v7
         with:
           ref: master
           fetch-depth: 0
-          token: ${{ secrets.PAT }}
+          token: ${{ secrets.PAT || github.token }}
 
       - name: Configure git identity
         run: |
@@ -121,7 +111,7 @@ jobs:
         with:
           ref: master
           fetch-depth: 0
-          token: ${{ secrets.PAT }}
+          token: ${{ secrets.PAT || github.token }}
 
       - name: Configure git identity
         run: |
@@ -138,7 +128,7 @@ jobs:
       - name: Publish tag and GitHub Release
         id: publish
         env:
-          GH_TOKEN: ${{ secrets.PAT }}
+          GH_TOKEN: ${{ secrets.PAT || github.token }}
           TAG: ${{ needs.sync.outputs.tag }}
           HEAD_SHA: ${{ needs.sync.outputs.head_sha }}
           VERSION: ${{ needs.sync.outputs.version }}
