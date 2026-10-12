@@ -1,10 +1,10 @@
 #!/bin/bash
 # =========================================================
-# yypm keybox 更新脚本 —— 宝塔计划任务执行此脚本
+# OhMyKeymint keybox 更新脚本 —— 计划任务(cron)/宝塔计划任务执行此脚本
 # 以 www 用户运行 PHP（与网站 PHP 进程同用户）
 # =========================================================
 PHP=/www/server/php/84/bin/php
-DIR=/www/wwwroot/your-server.example.com/api/kernelsu/module
+DIR=/www/wwwroot/your-server.example.com/api/omk
 
 # 确保 www 用户对数据/密钥/模块目录有读写权限
 chown -R www:www "$DIR/data" "$DIR/keys" "$DIR/package" 2>/dev/null

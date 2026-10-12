@@ -1,6 +1,6 @@
 <?php
 /**
- * API 入口 —— 部署到 /api/kernelsu/module/index.php。
+ * API 入口 —— 部署到 /api/omk/index.php。
  * 自包含：只读同目录 data/ 下的 keybox.xml / manifest.json / module.zip，
  * 不依赖 web 根之外的任何文件（兼容 open_basedir）。
  *

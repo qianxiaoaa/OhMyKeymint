@@ -45,20 +45,99 @@ Static mirrors can serve `manifest.json`, `keybox.xml`, `module.zip` directly.
 The OMK client tries the query form (`?action=...`) and the static form on each
 configured base URL, so both the PHP server and a static CDN mirror work.
 
-## First run
+## Deployment
 
-1. Edit `config.php`; set `base_url` to the public address of this directory and
-   adjust `sources` to the upstream keybox sources you trust.
-2. Run `update.php` once. On first run `lib/sign.php` generates
-   `keys/ed25519.key` (private, `600`, web-inaccessible) and `keys/ed25519.pub`.
-3. Build the OMK module package and drop it in as `data/module.zip`, or set
-   `module_pkg` to its source path. The manifest reads `version`/`version_code`
-   from the package's `module.prop`; `config.php` values are only a fallback.
-4. Copy `keys/ed25519.pub` into the OMK client trust anchor: set
-   `TRUSTED_PUBKEY_B64` in `src/remote_keybox.rs` and rebuild. The client verifies
-   both `sha256` and the Ed25519 signature before installing anything.
-5. Schedule `update.php` and `fetch_packages.php` (cron or a web hook) to refresh
-   the keybox and packages.
+Requirements: PHP 8.x (7.4+ works) with the `sodium`, `curl` and `openssl`
+extensions, a web server, and cron. `python3` is only needed for
+`fetch_packages.php` / `scan_packages.sh`.
+
+Deploy flat into one web directory, because `public/index.php` reads
+`__DIR__/data`:
+
+```
+/api/omk/                 <- the web directory base_url points at
+├── index.php             <- copied from public/index.php
+├── update.php
+├── fetch_packages.php
+├── scan_packages.sh, scan_packages.py
+├── update.sh
+├── config.php
+├── lib/
+├── dashboard/            (optional)
+├── migrations/           (optional)
+├── package/              (package.json, sources.json, downloaded assets)
+├── data/                 (created at runtime: keybox.xml, manifest.json, module.zip)
+└── keys/                 (created at runtime: ed25519.key, ed25519.pub)
+```
+
+1. Upload the contents of this directory to e.g.
+   `/www/wwwroot/<your-domain>/api/omk`, and move `public/index.php` up into that
+   same directory (next to `data/`).
+2. Edit `config.php`: set `base_url` to the public URL of this directory, and
+   review `sources` and `revocation_sources`.
+3. Create and own the writable directories:
+   `mkdir -p data keys package && chown -R www:www data keys package`.
+4. First run as the web user: `sudo -u www php update.php`. It generates the
+   keypair, selects a valid keybox from your sources, and writes
+   `data/keybox.xml` plus `data/manifest.json`. Print `keys/ed25519.pub`; that is
+   the client trust anchor. Then `chmod 600 keys/ed25519.key`.
+5. Optionally drop a module package at `data/module.zip` (build one from this
+   repo with `python3 build.py --release`). Without it, `version`/`version_code`
+   fall back to `config.php`.
+6. Deny web access to `keys/` and route the directory to `index.php`:
+
+   ```nginx
+   location = /api/omk/keys { deny all; }
+   location ^~ /api/omk/keys/ { deny all; }
+   location /api/omk/ {
+       index index.php;
+       try_files $uri /api/omk/index.php?$query_string;
+   }
+   ```
+
+7. Schedule refreshes. Edit `PHP=` and `DIR=` in `update.sh` to match your host,
+   then run it from cron (it runs `fetch_packages.php` then `update.php`):
+
+   ```cron
+   0 */6 * * * /www/wwwroot/<your-domain>/api/omk/update.sh >> /www/wwwroot/<your-domain>/api/omk/data/cron.log 2>&1
+   ```
+
+8. Verify:
+
+   ```sh
+   curl -s  "https://<your-domain>/api/omk/?action=manifest" | head
+   curl -sI "https://<your-domain>/api/omk/?action=keybox"
+   ```
+
+## Client integration (this repo's module)
+
+The module consumes the server through two settings; no server file is copied
+into the module package.
+
+1. `src/remote_keybox.rs`: set the compiled trust anchor to the server's public
+   key:
+
+   ```rust
+   const TRUSTED_PUBKEY_B64: &str = "<contents of server keys/ed25519.pub>";
+   ```
+
+   Rebuild the module afterwards.
+
+2. `/data/misc/keystore/omk/config.toml`:
+
+   ```toml
+   [remote_keybox]
+   enabled = true
+   base_urls = ["https://<your-domain>/api/omk"]
+   interval_secs = 86400
+   auto_apply = true
+   ```
+
+3. Build and install the module: `python3 build.py --release`, then flash the
+   resulting `OhMyKeymint-*.zip` (or use `scripts/deploy_hot_update.py`).
+
+The module build (`build.py`, CI) never reads this directory, so the server is
+deployed separately on the PHP host and is never bundled into the module zip.
 
 ## Decentralized mirrors
 
