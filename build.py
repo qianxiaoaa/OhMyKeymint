@@ -129,7 +129,7 @@ def get_git_commit_hash() -> str:
         raise RuntimeError("Failed to get git commit hash")
     git_hash = result.stdout.strip()[:7]
     status = subprocess.run(
-        ["git", "status", "--porcelain", "--untracked-files=normal"],
+        ["git", "status", "--porcelain", "--untracked-files=no"],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
