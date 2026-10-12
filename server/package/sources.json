@@ -1,0 +1,25 @@
+{
+  "_readme": "第三方组件分发源：fetch_packages.php（cron）按此从上游 GitHub release 抓包。落盘文件名 = 键名。type: ksu-module（客户端 ksud 安装）| apk（pm install）。auto: true 时客户端发现未装/有新版会自动装（无需用户点按钮）。asset_match: 资产文件名正则。package: type=apk 时的应用包名（客户端判断是否已安装）。",
+  "HMA-OSS.zip": {
+    "github_release": "frknkrc44/HMA-OSS",
+    "asset_match": "HMA-OSS-ZYGISK-.*-release\\.zip$",
+    "type": "ksu-module",
+    "auto": true,
+    "note": "HMA-OSS（Zygisk 版隐藏应用列表，无需 LSPosed；依赖 Zygisk-Next；自带管理 App）；替代已下架的 hma-uidfake（那个需要 LSPosed 版 HMA 的配置才工作）"
+  },
+  "FuseFixer.apk": {
+    "github_release": "5ec1cff/FuseFixer",
+    "asset_match": "\\.apk$",
+    "type": "apk",
+    "package": "io.github.a13e300.fusefixer",
+    "auto": true,
+    "note": "FUSE 修复（春秋检测整改项）；装完还需在 LSPosed 里启用并勾选系统框架"
+  },
+  "Zygisk-Next.zip": {
+    "github_release": "LSPosed/ZygiskNext",
+    "asset_match": "Zygisk-Next-.*-release\\.zip$",
+    "type": "ksu-module",
+    "auto": true,
+    "note": "KernelSU 环境提供 Zygisk（HMA-OSS 等模块的运行前提）；上游 LSPosed/ZygiskNext"
+  }
+}

@@ -35,6 +35,7 @@ pub mod macros;
 pub mod pif_spoof;
 pub mod plat;
 pub mod proto;
+pub mod remote_keybox;
 pub mod security_patch;
 pub mod selinux;
 pub mod soter_beta;
@@ -1151,6 +1152,7 @@ fn run() -> Result<()> {
     repair_omk_data_files();
 
     keybox::initialize().context("failed to initialize keybox runtime")?;
+    remote_keybox::spawn_worker();
 
     info!("setting uid/gid={} role=keystore", KEYSTORE_UID);
     set_keystore_identity()?;

@@ -543,6 +543,18 @@ overrideTelephonyProperties = false
 meid = ""
 imei = ""
 imei2 = ""
+
+[remote_keybox]
+# Pull a signed keybox from the first reachable mirror on startup and on the
+# configured interval. Keep false unless you run a signing server.
+enabled = false
+# Ordered https mirror base URLs; the first reachable mirror wins.
+base_urls = []
+# Seconds between background refreshes (minimum 60).
+interval_secs = 86400
+# Install a verified keybox immediately. When false it is only staged under
+# /data/misc/keystore/omk/data/remote_keybox/ and never activated.
+auto_apply = true
 ```
 
 ### Top-level field
@@ -949,6 +961,44 @@ fields.
 The MEID used by devices that provide one. Many devices have no MEID, so an
 empty value is valid. Its absence does not invalidate an available IMEI.
 
+### `[remote_keybox]`
+
+This section drives the decentralized keybox distribution: OMK polls an ordered
+list of mirrors, verifies a signed `manifest.json` and the referenced
+`keybox.xml` against an Ed25519 public key compiled into the binary, and installs
+the verified keybox as `/data/misc/keystore/omk/keybox.xml`. See
+`docs/REMOTE-KEYBOX.md` for the server side and the key setup.
+
+#### `enabled`
+
+When `true`, a background task fetches and verifies a keybox shortly after each
+keymint start and then every `interval_secs`. When `false`, no remote fetch
+happens and the on-device keybox is used unchanged. `enabled = true` requires at
+least one `base_urls` entry.
+
+#### `base_urls`
+
+An ordered list of absolute `https` mirror base URLs. OMK tries them in order and
+uses the first reachable mirror whose payload verifies against the compiled
+public key. Each entry may be a live PHP API base (queried as `?action=manifest`
+and `?action=keybox`) or a static mirror root (serving `manifest.json` and
+`keybox.xml`); OMK tries both forms. Entries must not carry a query string. A
+mirror that serves a missing or unverifiable payload is skipped and the next
+entry is tried.
+
+#### `interval_secs`
+
+Seconds between background refreshes. The minimum enforced value is `60`.
+
+#### `auto_apply`
+
+When `true`, a verified keybox is installed immediately and the running keymint
+reloads it. Changing the keybox identity retires keybox-bound key entries and
+clears attestation caches, so keys signed under the previous keybox stop working.
+When `false`, the verified keybox is written to
+`/data/misc/keystore/omk/data/remote_keybox/keybox.xml` for inspection and never
+activated.
+
 ### `config.toml` apply summary
 
 | Fields | Required action |
@@ -962,6 +1012,7 @@ empty value is valid. Its absence does not invalidate an available IMEI.
 | Other `[trust]` fields | Restart keymint. |
 | All `[device]` fields | Restart keymint to rebuild the cached ID snapshot. |
 | `vb_key` or `vb_hash` from `"random"` to `"auto"` | Reboot the whole device. |
+| `[remote_keybox]` fields | Picked up on the next refresh; a verified keybox with `auto_apply = true` hot-reloads immediately. |
 
 ## `injector.toml`
 

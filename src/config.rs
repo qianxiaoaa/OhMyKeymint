@@ -17,6 +17,7 @@ use kmr_common::{
 };
 use kmr_crypto_boring::rng::BoringRng;
 use serde::{ser::SerializeStruct, Deserialize, Serialize};
+use ureq::http::Uri;
 
 pub static CONFIG: OnceLock<RwLock<Config>> = OnceLock::new();
 static CONFIG_WATCHER_STARTED: OnceLock<()> = OnceLock::new();
@@ -481,6 +482,7 @@ fn parse_config_file(contents: &str, allow_migration: bool) -> Result<ParsedConf
     validate_main_config(&config_file.main)?;
     validate_trust_config(&config_file.trust)?;
     validate_app_patch_levels(&config_file.app_patch_levels)?;
+    validate_remote_keybox_config(&config_file.remote_keybox)?;
     Ok(ParsedConfigFile {
         config_file,
         table,
@@ -747,6 +749,7 @@ pub struct Config {
     pub trust: ResolvedTrust,
     pub device: DeviceProperty,
     pub app_patch_levels: BTreeMap<String, AppPatchLevels>,
+    pub remote_keybox: RemoteKeyboxConfig,
     trust_intent: RawTrustConfig,
 }
 
@@ -758,6 +761,7 @@ impl Config {
             trust: resolved_trust,
             device: config_file.device.clone(),
             app_patch_levels: config_file.app_patch_levels.clone(),
+            remote_keybox: config_file.remote_keybox.clone(),
             trust_intent: config_file.trust.clone(),
         }
     }
@@ -772,6 +776,8 @@ pub struct ConfigFile {
     pub device: DeviceProperty,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub app_patch_levels: BTreeMap<String, AppPatchLevels>,
+    #[serde(default)]
+    pub remote_keybox: RemoteKeyboxConfig,
 }
 
 impl Default for ConfigFile {
@@ -783,6 +789,7 @@ impl Default for ConfigFile {
             trust: RawTrustConfig::default(),
             device: DeviceProperty::default(),
             app_patch_levels: BTreeMap::new(),
+            remote_keybox: RemoteKeyboxConfig::default(),
         }
     }
 }
@@ -1059,6 +1066,60 @@ impl Default for MainConfig {
             force_skip_system_biometric_hat_verification: false,
         }
     }
+}
+
+/// Remote keybox distribution settings.
+///
+/// When enabled, OMK periodically downloads a signed `manifest.json` and
+/// `keybox.xml` from the first reachable `base_urls` mirror, verifies the
+/// SHA-256 and Ed25519 signature against the public key compiled into the
+/// binary, and installs the result as `/data/misc/keystore/omk/keybox.xml`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct RemoteKeyboxConfig {
+    pub enabled: bool,
+    /// Ordered mirror base URLs. The first reachable mirror wins.
+    pub base_urls: Vec<String>,
+    /// Seconds between background refresh attempts.
+    pub interval_secs: u64,
+    /// Install a verified keybox immediately. When false, the verified
+    /// keybox is only staged and never replaces the active one.
+    pub auto_apply: bool,
+}
+
+impl Default for RemoteKeyboxConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            base_urls: Vec::new(),
+            interval_secs: 86_400,
+            auto_apply: true,
+        }
+    }
+}
+
+fn validate_remote_keybox_config(config: &RemoteKeyboxConfig) -> Result<()> {
+    if config.enabled && config.base_urls.is_empty() {
+        bail!("remote_keybox.enabled requires at least one remote_keybox.base_urls entry");
+    }
+    if config.enabled && config.interval_secs < 60 {
+        bail!("remote_keybox.interval_secs must be at least 60");
+    }
+    for url in &config.base_urls {
+        let uri: Uri = url.parse().with_context(|| {
+            format!("remote_keybox.base_urls entry is not a valid URL: {url:?}")
+        })?;
+        if uri.scheme_str() != Some("https")
+            || uri.authority().is_none()
+            || uri.query().is_some()
+            || url.trim() != url
+        {
+            bail!(
+                "remote_keybox.base_urls entries must be absolute https URLs without a query or surrounding whitespace: {url:?}"
+            );
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

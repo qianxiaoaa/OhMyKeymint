@@ -1,0 +1,5 @@
+/data/
+/keys/
+/package/*.zip
+/package/*.apk
+/package/packages.json
