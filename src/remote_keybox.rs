@@ -32,6 +32,7 @@
 //! API (`?action=...`) and as a static mirror root (`manifest.json` /
 //! `keybox.xml`), so a single list of mirrors covers both deployment styles.
 
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -347,10 +348,17 @@ fn trusted_pubkey() -> Result<[u8; 32]> {
 }
 
 fn stage_keybox(payload: &[u8]) -> Result<()> {
-    std::fs::create_dir_all(STAGING_DIR)
-        .with_context(|| format!("failed to create remote keybox staging directory {STAGING_DIR}"))?;
-    atomic_replace_preserving_metadata(STAGING_KEYBOX, payload, 0o600, KEYSTORE_UID, KEYSTORE_GID)
-        .with_context(|| format!("failed to stage the verified remote keybox at {STAGING_KEYBOX}"))
+    std::fs::create_dir_all(STAGING_DIR).with_context(|| {
+        format!("failed to create remote keybox staging directory {STAGING_DIR}")
+    })?;
+    atomic_replace_preserving_metadata(
+        Path::new(STAGING_KEYBOX),
+        payload,
+        0o600,
+        KEYSTORE_UID,
+        KEYSTORE_GID,
+    )
+    .with_context(|| format!("failed to stage the verified remote keybox at {STAGING_KEYBOX}"))
 }
 
 #[cfg(test)]
