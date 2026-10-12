@@ -1,8 +1,8 @@
 本次更新：
 
-- 新增远程 Keybox 分发：按镜像列表拉取签名清单，校验 SHA-256 与 Ed25519 后安装或暂存。
-- WebUI 增加立即刷新 Keybox，以及本地壁纸支持。
-- 默认镜像为 `https://omk.novapi.cc/api/omk`，更换 keybox 时刷新已钉住的 vbmeta 值。
-- 对齐 CI WebUI 产物，并修复远程 Keybox 暂存路径类型。
+- 修复 WebUI「更新 Keybox」一次性命令未读取配置导致的 panic。
+- 更新成功提示为「更新成功啦」，已最新为「这已经是最新的啦」。
+- 移除 WebUI 自定义壁纸，保留系统 Monet 取色。
+- 增加每日凌晨同步上游与自动发行流程。
 
 构建：GitHub Actions（arm64-v8a，debug/release）。
