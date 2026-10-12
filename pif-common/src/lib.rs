@@ -66,6 +66,16 @@ impl DeviceEntry {
 }
 
 impl PifProfile {
+    pub fn from_feed(contents: &[u8]) -> Result<Self, String> {
+        let source = parse_source_profile(contents)?;
+        let fingerprint = parse_fingerprint(&source.fingerprint)?;
+        let selected = DeviceEntry {
+            model: source.model.clone(),
+            product: fingerprint.product.to_string(),
+        };
+        Self::from_source(&selected, contents)
+    }
+
     pub fn from_source(selected: &DeviceEntry, contents: &[u8]) -> Result<Self, String> {
         selected.validate()?;
         let source = parse_source_profile(contents)?;
@@ -238,7 +248,40 @@ fn parse_source_profile(contents: &[u8]) -> Result<SourceProfile, String> {
     if text.contains('\0') {
         return Err("PIF source profile contains NUL".to_string());
     }
+    let trimmed = text.trim();
+    if trimmed.starts_with('{') {
+        return parse_extended_source_profile(trimmed);
+    }
+    parse_prop_source_profile(text)
+}
 
+fn parse_extended_source_profile(text: &str) -> Result<SourceProfile, String> {
+    #[derive(Deserialize)]
+    struct Fields {
+        #[serde(rename = "FINGERPRINT")]
+        fingerprint: String,
+        #[serde(rename = "MANUFACTURER")]
+        manufacturer: String,
+        #[serde(rename = "MODEL")]
+        model: String,
+        #[serde(rename = "SECURITY_PATCH")]
+        security_patch: String,
+    }
+
+    let fields: Fields = serde_json::from_str(text)
+        .map_err(|error| format!("invalid PIF source profile JSON: {error}"))?;
+    let source = SourceProfile {
+        fingerprint: fields.fingerprint,
+        manufacturer: fields.manufacturer,
+        model: fields.model,
+        security_patch: fields.security_patch,
+    };
+    validate_display_value("MANUFACTURER", &source.manufacturer)?;
+    validate_display_value("MODEL", &source.model)?;
+    Ok(source)
+}
+
+fn parse_prop_source_profile(text: &str) -> Result<SourceProfile, String> {
     let mut fingerprint = None;
     let mut manufacturer = None;
     let mut model = None;
@@ -391,6 +434,48 @@ mod tests {
     use super::*;
 
     const PROP: &str = "FINGERPRINT=google/oriole_beta/oriole:CANARY/ZP11.260717.006/16004061:user/release-keys\nMANUFACTURER=Google\nMODEL=Pixel 6\nSECURITY_PATCH=2026-08-05\n";
+    const EXTENDED_JSON: &str = r#"{
+  "ID": "ZP11.260717.006",
+  "BRAND": "google",
+  "DEVICE": "oriole",
+  "MANUFACTURER": "Google",
+  "FINGERPRINT": "google/oriole_beta/oriole:CANARY/ZP11.260717.006/16004061:user/release-keys",
+  "MODEL": "Pixel 6",
+  "PRODUCT": "oriole_beta",
+  "SECURITY_PATCH": "2026-08-05",
+  "DEVICE_INITIAL_SDK_INT": "31",
+  "TYPE": "user",
+  "TAG": "release-keys",
+  "RELEASE": "CANARY",
+  "DEBUG": false,
+  "spoofBuild": "1",
+  "spoofProps": "0",
+  "spoofProvider": "0",
+  "spoofSignature": "0",
+  "spoofVendingSdk": "0",
+  "verboseLogs": "0"
+}"#;
+    const AKITA_JSON: &str = r#"{
+  "ID": "CP3A.261005.005",
+  "BRAND": "google",
+  "DEVICE": "akita",
+  "MANUFACTURER": "Google",
+  "FINGERPRINT": "google/akita/akita:17/CP3A.261005.005/16271449:user/release-keys",
+  "MODEL": "Pixel 8a",
+  "PRODUCT": "akita",
+  "SECURITY_PATCH": "2026-10-05",
+  "DEVICE_INITIAL_SDK_INT": "34",
+  "TYPE": "user",
+  "TAG": "release-keys",
+  "RELEASE": "17",
+  "DEBUG": false,
+  "spoofBuild": "1",
+  "spoofProps": "0",
+  "spoofProvider": "0",
+  "spoofSignature": "0",
+  "spoofVendingSdk": "0",
+  "verboseLogs": "0"
+}"#;
 
     fn selected() -> DeviceEntry {
         DeviceEntry {
@@ -431,6 +516,29 @@ mod tests {
         for product in ["", "../oriole", "oriole.prop", "Pixel_6", "a-b", "_oriole"] {
             assert!(validate_product(product).is_err(), "{product}");
         }
+    }
+
+    #[test]
+    fn extended_json_profile_ignores_unknown_fields_and_matches_prop() {
+        let from_json = PifProfile::from_feed(EXTENDED_JSON.as_bytes()).unwrap();
+        let from_prop = PifProfile::from_source(&selected(), PROP.as_bytes()).unwrap();
+        assert_eq!(from_json, from_prop);
+        assert!(PifProfile::from_feed(br#"{"MODEL":"Pixel 6"}"#).is_err());
+    }
+
+    #[test]
+    fn extended_json_accepts_current_pif_config_generator_profile() {
+        let profile = PifProfile::from_feed(AKITA_JSON.as_bytes()).unwrap();
+        assert_eq!(profile.model, "Pixel 8a");
+        assert_eq!(profile.product, "akita");
+        assert_eq!(profile.device, "akita");
+        assert_eq!(profile.release, "17");
+        assert_eq!(profile.id, "CP3A.261005.005");
+        assert_eq!(
+            profile.fingerprint,
+            "google/akita/akita:17/CP3A.261005.005/16271449:user/release-keys"
+        );
+        assert_eq!(profile.security_patch, "2026-10-05");
     }
 
     #[test]

@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     fs::{self, File, OpenOptions},
     os::{fd::AsRawFd, unix::fs::OpenOptionsExt},
     path::Path,
@@ -11,22 +12,27 @@ use kmr_common::{
     runtime::fs::atomic_replace_preserving_metadata,
 };
 use pif_common::{
-    parse_catalog, validate_product, DeviceEntry, PifProfile, MAX_CATALOG_BYTES, MAX_PROFILE_BYTES,
+    validate_product, DeviceEntry, PifProfile, MAX_CATALOG_ENTRIES, MAX_PROFILE_BYTES,
     MAX_PROP_BYTES,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use ureq::http::Uri;
 
 use crate::{root_path, security_patch, webui_http};
 
 const PROFILE_PATH: &str = root_path!("data/pif_fingerprint.json");
-// GitHub Raw has a short cache window for the bot branch. Keep jsDelivr as a
-// fallback for devices that cannot reach GitHub directly, rather than making
-// a week-old CDN response the normal source for a daily feed.
-const PRIMARY_BASE: &str = "https://raw.githubusercontent.com/KOWX712/PlayIntegrityFix/bot";
-const FALLBACK_BASE: &str = "https://fastly.jsdelivr.net/gh/KOWX712/PlayIntegrityFix@bot";
-const JSDELIVR_HOSTS: [&str; 2] = ["fastly.jsdelivr.net", "cdn.jsdelivr.net"];
-const RAW_HOST: &str = "raw.githubusercontent.com";
+const FEED_OWNER: &str = "Elcapitanoe";
+const FEED_REPO: &str = "PIF-Config-Generator";
+const RELEASE_API_URL: &str =
+    "https://api.github.com/repos/Elcapitanoe/PIF-Config-Generator/releases/latest";
+const PROXY_HOST: &str = "gh-proxy.com";
+const API_HOST: &str = "api.github.com";
+const GITHUB_HOST: &str = "github.com";
+const RELEASE_ASSET_HOSTS: [&str; 2] = [
+    "release-assets.githubusercontent.com",
+    "objects.githubusercontent.com",
+];
+const MAX_RELEASE_BYTES: usize = 256 * 1024;
 const MAX_REDIRECTS: usize = 3;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -34,38 +40,42 @@ const PROCESS_NAMES: [&[u8]; 2] = [b"com.google.android.gms.unstable", b"com.and
 
 #[derive(Debug, Clone)]
 enum FeedResource {
-    Catalog,
-    Profile(String),
+    Release,
+    Profile { tag: String, asset: String },
 }
 
 impl FeedResource {
-    fn relative_path(&self) -> String {
-        match self {
-            Self::Catalog => "device_list.json".to_string(),
-            Self::Profile(product) => format!("device_prop/{product}.prop"),
-        }
-    }
-
     fn max_bytes(&self) -> usize {
         match self {
-            Self::Catalog => MAX_CATALOG_BYTES,
-            Self::Profile(_) => MAX_PROP_BYTES,
+            Self::Release => MAX_RELEASE_BYTES,
+            Self::Profile { .. } => MAX_PROP_BYTES,
         }
     }
 
     fn size_label(&self) -> &'static str {
         match self {
-            Self::Catalog => "64 KiB",
-            Self::Profile(_) => "4 KiB",
+            Self::Release => "256 KiB",
+            Self::Profile { .. } => "4 KiB",
         }
     }
 
     fn label(&self) -> &'static str {
         match self {
-            Self::Catalog => "PIF device catalog",
-            Self::Profile(_) => "PIF device profile",
+            Self::Release => "PIF release catalog",
+            Self::Profile { .. } => "PIF device profile",
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubRelease {
+    tag_name: String,
+    assets: Vec<GithubAsset>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubAsset {
+    name: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -83,7 +93,10 @@ struct EnabledState<'a> {
 }
 
 pub fn list_devices() -> Result<String> {
-    let entries = download_catalog()?;
+    let entries = load_feed()?
+        .into_iter()
+        .map(|(device, _)| device)
+        .collect::<Vec<_>>();
     serde_json::to_string(&entries).context("failed to serialize PIF device catalog")
 }
 
@@ -93,16 +106,11 @@ pub fn fingerprint_state() -> Result<String> {
 
 pub fn apply_fingerprint(product: &str) -> Result<String> {
     validate_product(product).map_err(anyhow::Error::msg)?;
-    let catalog = download_catalog()?;
-    let selected = catalog
-        .iter()
-        .find(|entry| entry.product == product)
+    let profile = load_feed()?
+        .into_iter()
+        .find(|(device, _)| device.product == product)
+        .map(|(_, profile)| profile)
         .ok_or_else(|| anyhow!("selected product is not present in the current PIF catalog"))?;
-    let resource = FeedResource::Profile(product.to_string());
-    let contents = download_feed(&resource)?;
-    let profile = PifProfile::from_source(selected, contents.as_bytes())
-        .map_err(anyhow::Error::msg)
-        .context("downloaded PIF profile failed validation")?;
 
     let path = Path::new(PROFILE_PATH);
     let _lock = security_patch::acquire_data_operation_lock(path)?;
@@ -119,25 +127,78 @@ pub fn disable_fingerprint() -> Result<String> {
     state_json(None)
 }
 
-fn download_catalog() -> Result<Vec<DeviceEntry>> {
-    let contents = download_feed(&FeedResource::Catalog)?;
-    parse_catalog(contents.as_bytes()).map_err(anyhow::Error::msg)
+fn load_feed() -> Result<Vec<(DeviceEntry, PifProfile)>> {
+    let contents = download_feed(&FeedResource::Release)?;
+    let release: GithubRelease = serde_json::from_str(&contents)
+        .context("failed to parse the PIF release catalog")?;
+    if !is_release_tag(&release.tag_name) {
+        bail!("PIF release tag is invalid");
+    }
+
+    let mut entries = Vec::new();
+    let mut products = BTreeSet::new();
+    for asset in &release.assets {
+        if !is_profile_asset_name(&asset.name) {
+            continue;
+        }
+        if entries.len() >= MAX_CATALOG_ENTRIES {
+            bail!("PIF device catalog contains more than {MAX_CATALOG_ENTRIES} entries");
+        }
+        let resource = FeedResource::Profile {
+            tag: release.tag_name.clone(),
+            asset: asset.name.clone(),
+        };
+        let profile_json = download_feed(&resource)?;
+        let profile = PifProfile::from_feed(profile_json.as_bytes())
+            .map_err(anyhow::Error::msg)
+            .with_context(|| format!("downloaded PIF profile {} failed validation", asset.name))?;
+        let device = DeviceEntry {
+            model: profile.model.clone(),
+            product: profile.product.clone(),
+        };
+        device.validate().map_err(anyhow::Error::msg)?;
+        if !products.insert(device.product.clone()) {
+            bail!(
+                "PIF device catalog contains duplicate product {}",
+                device.product
+            );
+        }
+        entries.push((device, profile));
+    }
+    if entries.is_empty() {
+        bail!("PIF device catalog is empty");
+    }
+    Ok(entries)
+}
+
+fn github_url(resource: &FeedResource) -> Result<String> {
+    Ok(match resource {
+        FeedResource::Release => RELEASE_API_URL.to_string(),
+        FeedResource::Profile { tag, asset } => {
+            if !is_release_tag(tag) || !is_profile_asset_name(asset) {
+                bail!("{} URL is outside the fixed feed paths", resource.label());
+            }
+            format!("https://github.com/{FEED_OWNER}/{FEED_REPO}/releases/download/{tag}/{asset}")
+        }
+    })
+}
+
+fn proxy_url(origin: &str) -> String {
+    format!("https://{PROXY_HOST}/{origin}")
 }
 
 fn download_feed(resource: &FeedResource) -> Result<String> {
-    let relative = resource.relative_path();
-    let primary = format!("{PRIMARY_BASE}/{relative}");
-    let fallback = format!("{FALLBACK_BASE}/{relative}");
+    let origin = github_url(resource)?;
+    let primary = proxy_url(&origin);
     let policy = webui_http::DownloadPolicy {
         resource: resource.label(),
-        redirect_allowlist: "the fixed PlayIntegrityFix feed paths",
+        redirect_allowlist: "the fixed PIF-Config-Generator release paths",
         max_bytes: resource.max_bytes(),
         max_size_label: resource.size_label(),
         max_redirects: MAX_REDIRECTS,
         timeout: REQUEST_TIMEOUT,
         connect_timeout: CONNECT_TIMEOUT,
     };
-
     let fetch = |url: &str| -> Result<String> {
         let uri: Uri = url
             .parse()
@@ -147,40 +208,85 @@ fn download_feed(resource: &FeedResource) -> Result<String> {
         }
         webui_http::download_https_utf8(uri, &policy, |uri| is_allowed_feed_uri(uri, resource))
     };
-
     match fetch(&primary) {
         Ok(contents) => Ok(contents),
-        Err(primary_error) => fetch(&fallback).with_context(|| {
+        Err(primary_error) => fetch(&origin).with_context(|| {
             format!("both PIF feed sources failed; primary source error: {primary_error:#}")
         }),
     }
 }
 
-fn is_allowed_feed_uri(uri: &Uri, resource: &FeedResource) -> bool {
-    if uri.scheme_str() != Some("https") || uri.query().is_some() {
-        return false;
-    }
-    let Some(authority) = uri.authority() else {
+fn is_release_tag(tag: &str) -> bool {
+    let Some(rest) = tag.strip_prefix('v') else {
         return false;
     };
-    let authority = authority.as_str();
+    let parts: Vec<&str> = rest.split('.').collect();
+    parts.len() == 3
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
+fn is_profile_asset_name(name: &str) -> bool {
+    name.ends_with(".json")
+        && name.len() > ".json".len()
+        && name.len() <= 126
+        && !name.contains("..")
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'))
+}
+
+fn feed_host(uri: &Uri) -> Option<&str> {
+    if uri.scheme_str() != Some("https") {
+        return None;
+    }
+    let authority = uri.authority()?.as_str();
     if authority.contains('@') {
-        return false;
+        return None;
     }
-    let host = match authority.strip_suffix(":443") {
+    Some(match authority.strip_suffix(":443") {
         Some(host) if !host.contains(':') => host,
-        Some(_) => return false,
-        None if authority.contains(':') => return false,
+        Some(_) => return None,
+        None if authority.contains(':') => return None,
         None => authority,
+    })
+}
+
+fn is_allowed_feed_uri(uri: &Uri, resource: &FeedResource) -> bool {
+    let Some(host) = feed_host(uri) else {
+        return false;
     };
-    let relative = resource.relative_path();
-    let jsdelivr_path = format!("/gh/KOWX712/PlayIntegrityFix@bot/{relative}");
-    let raw_path = format!("/KOWX712/PlayIntegrityFix/bot/{relative}");
-    (JSDELIVR_HOSTS
-        .iter()
-        .any(|allowed| host.eq_ignore_ascii_case(allowed))
-        && uri.path() == jsdelivr_path)
-        || (host.eq_ignore_ascii_case(RAW_HOST) && uri.path() == raw_path)
+    match resource {
+        FeedResource::Release => {
+            uri.query().is_none()
+                && ((host.eq_ignore_ascii_case(PROXY_HOST)
+                    && uri.path() == format!("/{RELEASE_API_URL}"))
+                    || (host.eq_ignore_ascii_case(API_HOST)
+                        && uri.path()
+                            == format!("/repos/{FEED_OWNER}/{FEED_REPO}/releases/latest")))
+        }
+        FeedResource::Profile { tag, asset } => {
+            if !is_release_tag(tag) || !is_profile_asset_name(asset) {
+                return false;
+            }
+            let origin =
+                format!("https://github.com/{FEED_OWNER}/{FEED_REPO}/releases/download/{tag}/{asset}");
+            let github_path = format!("/{FEED_OWNER}/{FEED_REPO}/releases/download/{tag}/{asset}");
+            if host.eq_ignore_ascii_case(PROXY_HOST) {
+                uri.query().is_none() && uri.path() == format!("/{origin}")
+            } else if host.eq_ignore_ascii_case(GITHUB_HOST) {
+                uri.query().is_none() && uri.path() == github_path
+            } else if RELEASE_ASSET_HOSTS
+                .iter()
+                .any(|allowed| host.eq_ignore_ascii_case(allowed))
+            {
+                !uri.path().is_empty() && !uri.path().contains("..")
+            } else {
+                false
+            }
+        }
+    }
 }
 
 fn state_json(profile: Option<&PifProfile>) -> Result<String> {
@@ -365,12 +471,39 @@ mod tests {
     }
 
     #[test]
+    fn release_tag_and_asset_name_reject_path_syntax() {
+        for tag in ["v2026.10.11", "v2026.01.01"] {
+            assert!(is_release_tag(tag), "{tag}");
+        }
+        for tag in ["2026.10.11", "v2026.10", "v2026.10.11.1", "v2026.10.11a", "v../10.11"] {
+            assert!(!is_release_tag(tag), "{tag}");
+        }
+        for name in [
+            "Akita_CP3A.261005.005.json",
+            "Oriole_CP3A.261005.002.A1.json",
+        ] {
+            assert!(is_profile_asset_name(name), "{name}");
+        }
+        for name in [
+            "",
+            ".json",
+            "Akita.json.txt",
+            "../Akita.json",
+            "Akita/CP3A.json",
+            "Akita.json?x=1",
+        ] {
+            assert!(!is_profile_asset_name(name), "{name}");
+        }
+    }
+
+    #[test]
     fn feed_allowlist_accepts_only_exact_resource_paths() {
-        let catalog = FeedResource::Catalog;
+        let catalog = FeedResource::Release;
         for url in [
-            "https://fastly.jsdelivr.net/gh/KOWX712/PlayIntegrityFix@bot/device_list.json",
-            "https://cdn.jsdelivr.net:443/gh/KOWX712/PlayIntegrityFix@bot/device_list.json",
-            "https://raw.githubusercontent.com/KOWX712/PlayIntegrityFix/bot/device_list.json",
+            "https://gh-proxy.com/https://api.github.com/repos/Elcapitanoe/PIF-Config-Generator/releases/latest",
+            "https://gh-proxy.com:443/https://api.github.com/repos/Elcapitanoe/PIF-Config-Generator/releases/latest",
+            "https://api.github.com/repos/Elcapitanoe/PIF-Config-Generator/releases/latest",
+            "https://api.github.com:443/repos/Elcapitanoe/PIF-Config-Generator/releases/latest",
         ] {
             assert!(
                 is_allowed_feed_uri(&url.parse().unwrap(), &catalog),
@@ -378,28 +511,53 @@ mod tests {
             );
         }
         for url in [
-            "http://fastly.jsdelivr.net/gh/KOWX712/PlayIntegrityFix@bot/device_list.json",
-            "https://fastly.jsdelivr.net:444/gh/KOWX712/PlayIntegrityFix@bot/device_list.json",
-            "https://fastly.jsdelivr.net:bad/gh/KOWX712/PlayIntegrityFix@bot/device_list.json",
-            "https://fastly.jsdelivr.net/gh/KOWX712/PlayIntegrityFix@master/device_list.json",
-            "https://fastly.jsdelivr.net/gh/KOWX712/PlayIntegrityFix@bot/device_list.json?x=1",
-            "https://fastly.jsdelivr.net.evil.example/gh/KOWX712/PlayIntegrityFix@bot/device_list.json",
+            "http://gh-proxy.com/https://api.github.com/repos/Elcapitanoe/PIF-Config-Generator/releases/latest",
+            "https://gh-proxy.com/https://api.github.com/repos/other/PIF-Config-Generator/releases/latest",
+            "https://api.github.com/repos/Elcapitanoe/PIF-Config-Generator/releases/latest?page=1",
+            "https://api.github.com.evil.example/repos/Elcapitanoe/PIF-Config-Generator/releases/latest",
         ] {
             assert!(!is_allowed_feed_uri(&url.parse().unwrap(), &catalog), "{url}");
         }
     }
 
     #[test]
-    fn profile_allowlist_binds_the_validated_product_to_the_path() {
-        let profile = FeedResource::Profile("oriole_beta".to_string());
+    fn profile_allowlist_binds_the_validated_release_asset_to_the_path() {
+        let profile = FeedResource::Profile {
+            tag: "v2026.10.11".to_string(),
+            asset: "Oriole_CP3A.261005.002.A1.json".to_string(),
+        };
         assert!(is_allowed_feed_uri(
-            &"https://fastly.jsdelivr.net/gh/KOWX712/PlayIntegrityFix@bot/device_prop/oriole_beta.prop"
+            &"https://gh-proxy.com/https://github.com/Elcapitanoe/PIF-Config-Generator/releases/download/v2026.10.11/Oriole_CP3A.261005.002.A1.json"
+                .parse()
+                .unwrap(),
+            &profile
+        ));
+        assert!(is_allowed_feed_uri(
+            &"https://github.com/Elcapitanoe/PIF-Config-Generator/releases/download/v2026.10.11/Oriole_CP3A.261005.002.A1.json"
+                .parse()
+                .unwrap(),
+            &profile
+        ));
+        assert!(is_allowed_feed_uri(
+            &"https://release-assets.githubusercontent.com/github-production-release-asset/1?sp=r"
                 .parse()
                 .unwrap(),
             &profile
         ));
         assert!(!is_allowed_feed_uri(
-            &"https://fastly.jsdelivr.net/gh/KOWX712/PlayIntegrityFix@bot/device_prop/raven_beta.prop"
+            &"https://github.com/Elcapitanoe/PIF-Config-Generator/releases/download/v2026.10.11/Raven_CP3A.261005.002.A1.json"
+                .parse()
+                .unwrap(),
+            &profile
+        ));
+        assert!(!is_allowed_feed_uri(
+            &"https://gh-proxy.com/https://github.com/Elcapitanoe/PIF-Config-Generator/releases/download/v2026.10.11/Raven_CP3A.261005.002.A1.json"
+                .parse()
+                .unwrap(),
+            &profile
+        ));
+        assert!(!is_allowed_feed_uri(
+            &"https://evil.example/Oriole_CP3A.261005.002.A1.json"
                 .parse()
                 .unwrap(),
             &profile

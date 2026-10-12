@@ -52,14 +52,14 @@ The field contract was checked against TrickyStore commit
 No TrickyStore code or binary is included in or required by Oh My Keymint.
 
 Pixel model names and PIF profile values are downloaded at runtime from the
-`bot` branch of
-[KOWX712/PlayIntegrityFix](https://github.com/KOWX712/PlayIntegrityFix). The
-feed format and generation path were checked against its `inject_s` commit
-[`2f8199a90a150ad98921438608e1e0e951ba2d5f`](https://github.com/KOWX712/PlayIntegrityFix/commit/2f8199a90a150ad98921438608e1e0e951ba2d5f).
-That project is licensed under GPL-3.0. Oh My Keymint does not copy or execute
-its WebUI or Autopif implementation; it independently validates the generated
-`device_list.json` and `device_prop/*.prop` data protocol before rendering the
-OMK PIF profile.
+latest GitHub Release of
+[Elcapitanoe/PIF-Config-Generator](https://github.com/Elcapitanoe/PIF-Config-Generator).
+The feed format was checked against the extended JSON schema in that project's
+README and `src/pif_generator/models.py`. That project is licensed under MIT.
+Oh My Keymint does not copy or execute its generator; it independently
+validates each release JSON profile before rendering the OMK PIF profile. GitHub
+requests first use `https://gh-proxy.com/` as a prefix, then the same GitHub URL
+directly.
 
 ## Google attestation status snapshot
 

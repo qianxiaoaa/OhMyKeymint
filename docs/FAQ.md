@@ -187,8 +187,9 @@ The **Security Level** row is read from the active Keybox certificate and shows
 either level.
 Continue to manage those settings through the documented active files.
 
-**Spoof PIF fingerprint** is the other network-backed action. PIF uses only the
-documented Pixel profile feed described below.
+**Spoof PIF fingerprint** is the other network-backed action. It downloads the
+latest Pixel JSON profiles from the `Elcapitanoe/PIF-Config-Generator` GitHub
+Release feed described below.
 
 ### What happens when the WebUI saves the app list?
 
@@ -309,9 +310,13 @@ routing boundary.
 ### What does Spoof PIF fingerprint change?
 
 It stores a validated Pixel profile at
-`/data/misc/keystore/omk/data/pif_fingerprint.json`. The selected profile is
-downloaded through OMK's native HTTPS client, validated, and expanded into
-matching Android Build fields. OMK's own Zygisk payload reads that profile
+`/data/misc/keystore/omk/data/pif_fingerprint.json`. The helper downloads the
+latest GitHub Release from `Elcapitanoe/PIF-Config-Generator`, then each
+validated JSON profile from that release. Requests first use
+`https://gh-proxy.com/` in front of the GitHub URL, then the same GitHub URL
+directly. Extra JSON fields from the upstream schema are ignored. The selected
+profile is validated and expanded into matching Android Build fields. OMK's own
+Zygisk payload reads that profile
 when the target process starts through the Zygisk Next loader. Zygisk Next must
 be installed and active by the user; OMK does not bundle, install, or implement
 that loader.

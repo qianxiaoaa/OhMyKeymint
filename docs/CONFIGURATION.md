@@ -275,20 +275,20 @@ configuration, keybox, logs, and OMK-created key data and cannot be undone. A
 module disable does not remove these directories; reboot after an uninstall.
 
 The **Spoof PIF fingerprint** action is a separate OMK Zygisk integration. It
-downloads a Pixel device list from
-`KOWX712/PlayIntegrityFix`'s `bot/device_list.json`, then downloads the selected
-`bot/device_prop/<product>.prop`. The upstream bot refreshes these records
-daily from Google's Android preview pages, Android Flash Tool Canary metadata,
-and Pixel security bulletin. The helper first tries the exact GitHub Raw path
-and then the exact jsDelivr path. It does not run the upstream Autopif shell
-script and does not require a device-provided `curl`, `wget`, or shell download
-tool.
+downloads the latest GitHub Release from
+`Elcapitanoe/PIF-Config-Generator`, then downloads each validated JSON profile
+asset from that release. The upstream generator compiles Pixel build properties
+into extended PIF JSON profiles. The helper first tries `https://gh-proxy.com/`
+in front of the exact GitHub API and release-download URLs, then the same GitHub
+URLs directly. It does not run the upstream generator and does not require a
+device-provided `curl`, `wget`, or shell download tool.
 
 The native helper accepts only the fixed feed paths, validates every catalog
-entry, requires exactly `FINGERPRINT`, `MANUFACTURER`, `MODEL`, and
-`SECURITY_PATCH` in a profile, and splits the fingerprint into its eight Build
-components. It writes the following LF-delimited values only after they agree
-with one another and satisfy TrickyStore's value limits:
+entry, reads `FINGERPRINT`, `MANUFACTURER`, `MODEL`, and `SECURITY_PATCH` from
+each profile, and splits the fingerprint into its eight Build components. Extra
+JSON fields from the upstream schema are ignored. It writes the following
+LF-delimited values only after they agree with one another and satisfy
+TrickyStore's value limits:
 
 ```text
 MANUFACTURER=Google
