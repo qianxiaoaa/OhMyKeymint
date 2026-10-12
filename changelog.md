@@ -1,8 +1,8 @@
 本次更新：
 
-- 修复 WebUI「更新 Keybox」一次性命令未读取配置导致的 panic。
-- 更新成功提示为「更新成功啦」，已最新为「这已经是最新的啦」。
-- 移除 WebUI 自定义壁纸，保留系统 Monet 取色。
-- 增加每日凌晨同步上游与自动发行流程。
+- 修复 WebUI「伪装 PIF 指纹」失败：旧 bot feed 的扩展 JSON 会被当成 unknown key。
+- 指纹源改为 Elcapitanoe/PIF-Config-Generator 最新 GitHub Release。
+- 下载先走 https://gh-proxy.com/，失败再直连 GitHub。
+- 只取 FINGERPRINT、MANUFACTURER、MODEL、SECURITY_PATCH，忽略其余字段。
 
 构建：GitHub Actions（arm64-v8a，debug/release）。
