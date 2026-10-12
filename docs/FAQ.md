@@ -165,17 +165,11 @@ configuration settings.
 **Update Keybox** refreshes the active keybox from the configured remote
 keybox mirrors using the same signed-manifest flow the module runs on its own
 schedule. Remote keybox is enabled by default with the mirror shipped in the
-module; the action is available while `[remote_keybox].enabled` is true. The
-WebUI reports whether a newer keybox was applied, whether it was already up to
-date, or that remote keybox is disabled; an already-current keybox leaves the
-active file unchanged.
-
-**Wallpaper** in Settings is local and makes no network request. Choosing a
-local image copies it into `/data/misc/keystore/omk/data/wallpaper` and shows
-it as the WebUI background. On first start the module also fetches the bundled
-default wallpaper once from `https://106.55.19.150:1314/down/ZHI0jZPFllR2.jpg`
-and caches it locally; the WebUI always renders whatever file is stored
-locally.
+module. The WebUI helper reads `[remote_keybox]` from the live KeyMint config
+when that process has already bootstrapped, and from `config.toml` for the
+one-shot command. The WebUI reports whether a newer keybox was applied, whether
+it was already up to date, or that remote keybox is disabled; an already-current
+keybox leaves the active file unchanged.
 
 The Home page checks every certificate serial number in the active Keybox
 against Google's attestation status list. The validated local cache is used for

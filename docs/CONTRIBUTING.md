@@ -156,6 +156,39 @@ injector RPC session.
 Do not add `#[allow(...)]` only to silence Clippy. Any necessary exception must
 have a concrete, documented reason and direct maintainer approval.
 
+## Nightly upstream sync
+
+This fork tracks [ITxiao6666/OhMyKeymint](https://github.com/ITxiao6666/OhMyKeymint)
+and the `php-server/` tree from [yangyang8002/yypm](https://github.com/yangyang8002/yypm).
+Recorded SHAs live in [`scripts/upstream-sync.json`](../scripts/upstream-sync.json).
+[`scripts/sync_upstreams.py`](../scripts/sync_upstreams.py) applies those updates
+and reapplies this fork's `/api/omk` PHP adaptations.
+
+The [nightly workflow](../.github/workflows/sync-upstreams.yml) runs at 02:00
+Asia/Shanghai (`0 18 * * *` UTC) and on `workflow_dispatch`:
+
+1. Merge ITxiao6666/OhMyKeymint with `git merge --no-ff`. Unresolved conflicts
+   (`UU`/`AA`/`DD` and related unmerged states) fail the job for manual repair.
+2. Copy yypm `php-server/` to `server/`, skip `.gitignore` and `README.md`, then
+   rewrite `/api/kernelsu/module` to `/api/omk` and restore the OMK headers and
+   fallback version fields. `server/` is an independent PHP component and is not
+   packed into the Magisk/KernelSU module zip.
+3. Record the synced SHAs. Commits use `qianxiaoaa <qianxiaoaa@users.noreply.github.com>`
+   with `--no-verify` and `--no-gpg-sign`.
+4. When the tree changed, call the [CI workflow](../.github/workflows/ci.yml) for
+   `aarch64-linux-android` arm64-v8a debug and release zips, tag
+   `v<version>-<commit count>-<short hash>`, publish the GitHub Release, and
+   update `changelog.md` / `update.json` on `master`.
+   [`update-changelog.yml`](../.github/workflows/update-changelog.yml) then
+   refreshes the `changelog` branch.
+
+The nightly job and changelog update both require `secrets.PAT` so GitHub
+commits and releases are authored by `qianxiaoaa`.
+
+Backend choice still follows the OMK routing invariants above. Do not infer a
+backend from a key, descriptor, `KEY_ID`, `GRANT`, alias, wrapping key, or
+attestation key created by an upstream revision.
+
 ## Commits and pull requests
 
 - Target pull requests at `master`.

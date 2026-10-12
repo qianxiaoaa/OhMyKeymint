@@ -1,0 +1,230 @@
+name: Sync upstreams
+
+on:
+  schedule:
+    - cron: "0 18 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: sync-upstreams
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+  actions: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.sync.outputs.changed }}
+      head_sha: ${{ steps.sync.outputs.head_sha }}
+      tag: ${{ steps.sync.outputs.tag }}
+      version: ${{ steps.sync.outputs.version }}
+      commit_count: ${{ steps.sync.outputs.commit_count }}
+      short_sha: ${{ steps.sync.outputs.short_sha }}
+      ohmykeymint_sha: ${{ steps.sync.outputs.ohmykeymint_sha }}
+      yypm_sha: ${{ steps.sync.outputs.yypm_sha }}
+    steps:
+      - name: Require PAT
+        env:
+          PAT: ${{ secrets.PAT }}
+        run: |
+          set -euo pipefail
+          if [ -z "$PAT" ]; then
+            echo "::error::secrets.PAT is required so commits and releases are authored by qianxiaoaa"
+            exit 1
+          fi
+
+      - name: Checkout master
+        uses: actions/checkout@v7
+        with:
+          ref: master
+          fetch-depth: 0
+          token: ${{ secrets.PAT }}
+
+      - name: Configure git identity
+        run: |
+          set -euo pipefail
+          git config user.name "qianxiaoaa"
+          git config user.email "qianxiaoaa@users.noreply.github.com"
+
+      - name: Clone upstreams
+        run: |
+          set -euo pipefail
+          ohmy_remote=$(python3 -c "import json; print(json.load(open('scripts/upstream-sync.json'))['ohmykeymint_remote'])")
+          ohmy_ref=$(python3 -c "import json; print(json.load(open('scripts/upstream-sync.json'))['ohmykeymint_ref'])")
+          yypm_remote=$(python3 -c "import json; print(json.load(open('scripts/upstream-sync.json'))['yypm_remote'])")
+          yypm_ref=$(python3 -c "import json; print(json.load(open('scripts/upstream-sync.json'))['yypm_ref'])")
+          git clone --branch "$ohmy_ref" "$ohmy_remote" /tmp/upstream-ohmykeymint
+          git clone --depth 1 --branch "$yypm_ref" "$yypm_remote" /tmp/upstream-yypm
+
+      - name: Sync upstreams
+        id: sync
+        env:
+          PYTHONUNBUFFERED: "1"
+          GIT_AUTHOR_NAME: qianxiaoaa
+          GIT_AUTHOR_EMAIL: qianxiaoaa@users.noreply.github.com
+          GIT_COMMITTER_NAME: qianxiaoaa
+          GIT_COMMITTER_EMAIL: qianxiaoaa@users.noreply.github.com
+        run: |
+          set -euo pipefail
+          python3 scripts/sync_upstreams.py \
+            --ohmykeymint-dir /tmp/upstream-ohmykeymint \
+            --yypm-dir /tmp/upstream-yypm | tee "$RUNNER_TEMP/sync-output.txt"
+
+          copy_output() {
+            local key="$1"
+            local value
+            value=$(awk -F= -v key="$key" '$1 == key {print substr($0, index($0, "=") + 1)}' "$RUNNER_TEMP/sync-output.txt" | tail -n1)
+            if [ -z "$value" ]; then
+              echo "::error::missing sync output $key"
+              exit 1
+            fi
+            printf '%s=%s\n' "$key" "$value" >> "$GITHUB_OUTPUT"
+          }
+
+          copy_output changed
+          copy_output head_sha
+          copy_output tag
+          copy_output version
+          copy_output commit_count
+          copy_output short_sha
+          copy_output ohmykeymint_sha
+          copy_output yypm_sha
+
+      - name: Push synced master
+        if: steps.sync.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          git push origin "HEAD:master"
+
+  build:
+    needs: sync
+    if: needs.sync.outputs.changed == 'true'
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ needs.sync.outputs.head_sha }}
+    secrets: inherit
+
+  release:
+    needs:
+      - sync
+      - build
+    if: needs.sync.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout master
+        uses: actions/checkout@v7
+        with:
+          ref: master
+          fetch-depth: 0
+          token: ${{ secrets.PAT }}
+
+      - name: Configure git identity
+        run: |
+          set -euo pipefail
+          git config user.name "qianxiaoaa"
+          git config user.email "qianxiaoaa@users.noreply.github.com"
+
+      - name: Download release zip
+        uses: actions/download-artifact@v8
+        with:
+          name: module-zip-release
+          path: dist
+
+      - name: Publish tag and GitHub Release
+        id: publish
+        env:
+          GH_TOKEN: ${{ secrets.PAT }}
+          TAG: ${{ needs.sync.outputs.tag }}
+          HEAD_SHA: ${{ needs.sync.outputs.head_sha }}
+          VERSION: ${{ needs.sync.outputs.version }}
+          COMMIT_COUNT: ${{ needs.sync.outputs.commit_count }}
+          SHORT_SHA: ${{ needs.sync.outputs.short_sha }}
+          OMK_SHA: ${{ needs.sync.outputs.ohmykeymint_sha }}
+          YYPM_SHA: ${{ needs.sync.outputs.yypm_sha }}
+        run: |
+          set -euo pipefail
+          git fetch --force --tags origin
+          if git rev-parse "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "::error::tag $TAG already exists"
+            exit 1
+          fi
+
+          shopt -s nullglob
+          zips=(dist/OhMyKeymint-*-release.zip)
+          if [ "${#zips[@]}" -ne 1 ]; then
+            echo "::error::expected one release zip, found:"
+            ls -l dist
+            exit 1
+          fi
+          zip="${zips[0]}"
+          zip_name=$(basename "$zip")
+          expected="OhMyKeymint-${VERSION}-${COMMIT_COUNT}-${SHORT_SHA}-release.zip"
+          if [ "$zip_name" != "$expected" ]; then
+            echo "::error::zip name $zip_name does not match $expected"
+            exit 1
+          fi
+
+          notes="$RUNNER_TEMP/release-notes.md"
+          {
+            echo "本次更新："
+            echo
+            echo "- 同步 ITxiao6666/OhMyKeymint \`${OMK_SHA:0:7}\`。"
+            echo "- 同步 yangyang8002/yypm php-server \`${YYPM_SHA:0:7}\` 并套用 /api/omk 适配。"
+            echo "- 构建：GitHub Actions（arm64-v8a，debug/release）。"
+          } > "$notes"
+
+          git tag -a "$TAG" "$HEAD_SHA" -m "$TAG"
+          git push origin "refs/tags/$TAG"
+          gh release create "$TAG" "$zip" \
+            --title "$TAG" \
+            --notes-file "$notes" \
+            --target "$HEAD_SHA"
+
+          zip_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${zip_name}"
+          printf 'zip_name=%s\n' "$zip_name" >> "$GITHUB_OUTPUT"
+          printf 'zip_url=%s\n' "$zip_url" >> "$GITHUB_OUTPUT"
+
+      - name: Update release metadata on master
+        env:
+          TAG: ${{ needs.sync.outputs.tag }}
+          COMMIT_COUNT: ${{ needs.sync.outputs.commit_count }}
+          ZIP_URL: ${{ steps.publish.outputs.zip_url }}
+        run: |
+          set -euo pipefail
+          git fetch origin master
+          git checkout master
+          git pull --ff-only origin master
+
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          Path("changelog.md").write_text(
+              "本次更新：\n"
+              "\n"
+              "- 同步 ITxiao6666/OhMyKeymint 与 yangyang8002/yypm php-server，并按本仓 /api/omk 适配。\n"
+              "- 构建：GitHub Actions（arm64-v8a，debug/release）。\n",
+              encoding="utf-8",
+          )
+          payload = {
+              "version": os.environ["TAG"],
+              "versionCode": int(os.environ["COMMIT_COUNT"]),
+              "zipUrl": os.environ["ZIP_URL"],
+              "changelog": "https://raw.githubusercontent.com/qianxiaoaa/OhMyKeymint/changelog/changelog.md",
+          }
+          Path("update.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+          PY
+
+          git add changelog.md update.json
+          if git diff --cached --quiet; then
+            echo "No release metadata changes to commit."
+          else
+            git commit --no-verify --no-gpg-sign -m "Update release metadata for ${TAG} [skip ci]"
+            git push origin HEAD:master
+          fi

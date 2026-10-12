@@ -109,19 +109,15 @@ pub fn spawn_worker() {
 }
 
 fn current_interval_secs() -> u64 {
-    config::config()
-        .read()
-        .map(|config| config.remote_keybox.interval_secs.max(MIN_INTERVAL_SECS))
+    config::load_remote_keybox_settings()
+        .map(|remote| remote.interval_secs.max(MIN_INTERVAL_SECS))
         .unwrap_or(MIN_INTERVAL_SECS)
 }
 
 /// Fetch, verify, and (when configured) install one keybox from the first
 /// reachable mirror. Returns whether the active keybox was replaced.
 pub fn refresh_once() -> Result<bool> {
-    let remote = match config::config().read() {
-        Ok(config) => config.remote_keybox.clone(),
-        Err(_) => bail!("config lock poisoned while reading remote keybox settings"),
-    };
+    let remote = config::load_remote_keybox_settings()?;
     if !remote.enabled {
         return Ok(false);
     }
@@ -133,7 +129,7 @@ pub fn refresh_once() -> Result<bool> {
     let bases = normalized_bases(&remote.base_urls)?;
     let mut failures = Vec::new();
     for base in &bases {
-        match refresh_from_mirror(base, &bases, &pubkey) {
+        match refresh_from_mirror(base, &bases, &pubkey, remote.auto_apply) {
             Ok(installed) => return Ok(installed),
             Err(error) => failures.push(format!("{base}: {error:#}")),
         }
@@ -157,7 +153,12 @@ fn normalized_bases(base_urls: &[String]) -> Result<Vec<String>> {
     Ok(bases)
 }
 
-fn refresh_from_mirror(base: &str, bases: &[String], pubkey: &[u8; 32]) -> Result<bool> {
+fn refresh_from_mirror(
+    base: &str,
+    bases: &[String],
+    pubkey: &[u8; 32],
+    auto_apply: bool,
+) -> Result<bool> {
     let manifest = fetch_manifest(base, bases)?;
     let entry = manifest
         .keybox
@@ -185,11 +186,7 @@ fn refresh_from_mirror(base: &str, bases: &[String], pubkey: &[u8; 32]) -> Resul
         return Ok(false);
     }
 
-    let remote = config::config()
-        .read()
-        .map(|config| config.remote_keybox.clone())
-        .unwrap_or_default();
-    if remote.auto_apply {
+    if auto_apply {
         keybox::install_keybox_xml(payload.as_bytes())
             .context("failed to install the verified remote keybox")?;
     } else {

@@ -66,9 +66,11 @@ The client tries both forms per mirror, so one ordered list covers both. See
 `docs/CONFIGURATION.md` for the full field reference.
 
 Besides the scheduled refresh, the module WebUI exposes an **Update Keybox**
-action that triggers one immediate refresh through the same flow. It is shown
-only while `enabled` is true and reports whether a newer keybox was applied or
-the active one was already current.
+action that triggers one immediate refresh through the same flow. The WebUI
+helper reads `[remote_keybox]` from the live KeyMint config when that process
+has already bootstrapped, and from `config.toml` when it is invoked as a
+one-shot command. It reports whether a newer keybox was applied, whether the
+active one was already current, or that remote keybox is disabled.
 
 ## Client change points
 
@@ -102,7 +104,8 @@ once, then copy `data/keybox.xml` and `data/manifest.json` into the branch the
 
 ## Refresh flow
 
-1. Read `[remote_keybox]` from the live configuration.
+1. Read `[remote_keybox]` from the live KeyMint configuration, or from
+   `config.toml` for a one-shot WebUI refresh.
 2. For each `base_urls` entry in order, fetch the manifest from
    `<base>/?action=manifest`, then `<base>/manifest.json`.
 3. Build keybox candidates from `keybox.url`, `<base>/?action=keybox`, and

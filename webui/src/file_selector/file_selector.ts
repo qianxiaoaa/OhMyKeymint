@@ -1,5 +1,5 @@
 import { exec } from 'kernelsu-alt'
-import { MAX_KEYBOX_XML_BYTES, MAX_WALLPAPER_BYTES } from '../cli'
+import { MAX_KEYBOX_XML_BYTES } from '../cli'
 import { i18n } from '../i18n'
 
 const STORAGE_ROOT = '/storage/emulated/0'
@@ -7,7 +7,7 @@ const INITIAL_PATH = `${STORAGE_ROOT}/Download`
 const MAX_LIST_ENTRIES = 512
 const MAX_LIST_OUTPUT_BYTES = 256 * 1024
 const MAX_ERROR_LENGTH = 512
-const MAX_SELECTABLE_FILE_BYTES = MAX_WALLPAPER_BYTES
+const MAX_SELECTABLE_FILE_BYTES = MAX_KEYBOX_XML_BYTES
 const SYSTEM_PICKER_RETURN_GRACE_MS = 2000
 
 export interface FileEntry {
@@ -307,7 +307,6 @@ export class FileSelector {
   #systemPickerActive = false
   #extensions: string[] = ['xml']
   #maxBytes = MAX_KEYBOX_XML_BYTES
-  #pathOnly = false
   #pathStack: string[] = [STORAGE_ROOT]
   #open = false
   #loading = false
@@ -348,29 +347,17 @@ export class FileSelector {
     extensions: string | readonly string[],
     maxBytes = MAX_KEYBOX_XML_BYTES,
   ): Promise<SelectedFile | null> {
-    return this.#openBrowser(extensions, maxBytes, false)
-  }
-
-  /** Open the in-app browser and return the selected file's path without
-   * reading its contents (used for wallpapers, which the native helper copies
-   * from the shared-storage path). */
-  getLocalFilePath(
-    extensions: string | readonly string[],
-    maxBytes = MAX_KEYBOX_XML_BYTES,
-  ): Promise<SelectedFile | null> {
-    return this.#openBrowser(extensions, maxBytes, true)
+    return this.#openBrowser(extensions, maxBytes)
   }
 
   #openBrowser(
     extensions: string | readonly string[],
     maxBytes: number,
-    pathOnly: boolean,
   ): Promise<SelectedFile | null> {
     const normalized = this.#validate(extensions, maxBytes)
     this.cancel()
     this.#extensions = normalized
     this.#maxBytes = maxBytes
-    this.#pathOnly = pathOnly
     this.#currentPath = INITIAL_PATH
     this.#pathStack = [STORAGE_ROOT, INITIAL_PATH]
     this.#entries = []
@@ -419,8 +406,6 @@ export class FileSelector {
       this.#currentPath = path
       this.#pathStack.push(path)
       void this.#listDirectory(path, pending.token)
-    } else if (this.#pathOnly) {
-      this.#finish({ name: entry.name, path, contents: new Uint8Array() })
     } else {
       void this.#readLocalFile(path, entry.name, pending.token)
     }
@@ -520,7 +505,6 @@ export class FileSelector {
     this.#request++
     this.#open = false
     this.#loading = false
-    this.#pathOnly = false
     this.#emit()
     pending.resolve(value)
   }

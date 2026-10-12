@@ -51,9 +51,23 @@ fn random_32(rng: &mut impl Rng) -> [u8; 32] {
 }
 
 pub fn config() -> &'static RwLock<Config> {
-    CONFIG
-        .get()
-        .expect("CONFIG must be bootstrapped before use")
+    try_config().expect("CONFIG must be bootstrapped before use")
+}
+
+pub(crate) fn try_config() -> Option<&'static RwLock<Config>> {
+    CONFIG.get()
+}
+
+/// Remote keybox settings from the live runtime config, or from `config.toml`
+/// when this process never entered the long-running KeyMint path.
+pub fn load_remote_keybox_settings() -> Result<RemoteKeyboxConfig> {
+    match try_config() {
+        Some(runtime) => runtime
+            .read()
+            .map(|config| config.remote_keybox.clone())
+            .map_err(|_| anyhow!("config lock poisoned while reading remote keybox settings")),
+        None => Ok(load_config_file()?.remote_keybox),
+    }
 }
 
 pub fn config_path() -> &'static str {
@@ -2338,6 +2352,28 @@ imei2 = ""
             );
             assert_eq!(fs::read_to_string(&path).unwrap(), prior);
         }
+    }
+
+    #[test]
+    fn remote_keybox_config_parses_disabled_and_custom_mirrors() {
+        let mut config_file = ConfigFile::default();
+        config_file.remote_keybox.enabled = false;
+        config_file.remote_keybox.base_urls = vec!["https://mirror.example/api/omk".to_string()];
+        config_file.remote_keybox.auto_apply = false;
+        let parsed = parse_config_file(&toml::to_string_pretty(&config_file).unwrap(), false)
+            .unwrap()
+            .config_file;
+        assert!(!parsed.remote_keybox.enabled);
+        assert_eq!(
+            parsed.remote_keybox.base_urls,
+            vec!["https://mirror.example/api/omk".to_string()]
+        );
+        assert!(!parsed.remote_keybox.auto_apply);
+    }
+
+    #[test]
+    fn load_remote_keybox_settings_does_not_panic_without_runtime_config() {
+        let _ = load_remote_keybox_settings();
     }
 
     #[derive(Serialize, Deserialize)]

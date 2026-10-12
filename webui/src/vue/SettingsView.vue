@@ -102,7 +102,6 @@ const languageSheetOpen = ref(false)
 const emit = defineEmits<{
   'overlay-open': []
   'overlay-close': []
-  changeWallpaper: []
 }>()
 
 watch(languageSheetOpen, open => {
@@ -214,18 +213,6 @@ onBeforeUnmount(appearance.onChange(syncAppearanceState))
           :text="translate('settings_appearance', 'Appearance')"
         />
         <MiuixCard class="settings-card" press-feedback="none">
-          <MiuixArrowPreference
-            :title="translate('settings_wallpaper', 'Wallpaper')"
-            :summary="translate('settings_wallpaper_desc', 'Choose a local image as the WebUI background')"
-            @click="emit('changeWallpaper')"
-          >
-            <template #start>
-              <span class="settings-preference-icon"><MiuixIcon :icon="Background" :size="22" /></span>
-            </template>
-          </MiuixArrowPreference>
-
-          <div class="settings-divider"><MiuixDivider /></div>
-
           <div class="settings-dropdown">
             <span class="settings-preference-icon" aria-hidden="true"><MiuixIcon :icon="Theme" :size="22" /></span>
             <MiuixDropdownPreference
