@@ -546,10 +546,12 @@ imei2 = ""
 
 [remote_keybox]
 # Pull a signed keybox from the first reachable mirror on startup and on the
-# configured interval. Keep false unless you run a signing server.
-enabled = false
-# Ordered https mirror base URLs; the first reachable mirror wins.
-base_urls = []
+# configured interval. Enabled by default; set false to use only the on-device
+# keybox.
+enabled = true
+# Ordered https mirror base URLs; the first reachable mirror wins. Defaults to
+# the mirror shipped with the module.
+base_urls = ["https://omk.novapi.cc/api/omk"]
 # Seconds between background refreshes (minimum 60).
 interval_secs = 86400
 # Install a verified keybox immediately. When false it is only staged under
@@ -972,19 +974,20 @@ the verified keybox as `/data/misc/keystore/omk/keybox.xml`. See
 #### `enabled`
 
 When `true`, a background task fetches and verifies a keybox shortly after each
-keymint start and then every `interval_secs`. When `false`, no remote fetch
-happens and the on-device keybox is used unchanged. `enabled = true` requires at
-least one `base_urls` entry.
+keymint start and then every `interval_secs`. This is the default. When `false`,
+no remote fetch happens and the on-device keybox is used unchanged.
+`enabled = true` requires at least one `base_urls` entry.
 
 #### `base_urls`
 
 An ordered list of absolute `https` mirror base URLs. OMK tries them in order and
 uses the first reachable mirror whose payload verifies against the compiled
-public key. Each entry may be a live PHP API base (queried as `?action=manifest`
-and `?action=keybox`) or a static mirror root (serving `manifest.json` and
-`keybox.xml`); OMK tries both forms. Entries must not carry a query string. A
-mirror that serves a missing or unverifiable payload is skipped and the next
-entry is tried.
+public key. It defaults to the mirror shipped with the module
+(`https://omk.novapi.cc/api/omk`). Each entry may be a live PHP API base (queried
+as `?action=manifest` and `?action=keybox`) or a static mirror root (serving
+`manifest.json` and `keybox.xml`); OMK tries both forms. Entries must not carry a
+query string. A mirror that serves a missing or unverifiable payload is skipped
+and the next entry is tried.
 
 #### `interval_secs`
 

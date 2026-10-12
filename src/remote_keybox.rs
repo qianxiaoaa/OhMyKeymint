@@ -50,9 +50,10 @@ use ureq::http::Uri;
 use crate::{config, keybox, webui_http};
 
 /// Public key trusted for remote keybox manifests: a 32-byte Ed25519 public key
-/// encoded as base64. Replace this with the public key matching the server's
-/// signing key before building. An empty value disables remote keybox fetches.
-const TRUSTED_PUBKEY_B64: &str = "";
+/// encoded as base64. The module ships the key for the default mirror; replace
+/// it with the public key matching your own server before building. An empty
+/// value disables remote keybox fetches.
+const TRUSTED_PUBKEY_B64: &str = "lkHjfbajCggi5wMcduYkFoODVHofepvBAD9vnxgiK5c=";
 
 const MANIFEST_FILE: &str = "manifest.json";
 const KEYBOX_FILE: &str = "keybox.xml";
@@ -331,14 +332,18 @@ fn verify_payload(pubkey: &[u8; 32], entry: &KeyboxEntry, payload: &[u8]) -> Res
     Ok(())
 }
 
-fn trusted_pubkey() -> Result<[u8; 32]> {
+fn decode_pubkey(encoded: &str) -> Result<[u8; 32]> {
     let decoded = BASE64_STANDARD
-        .decode(TRUSTED_PUBKEY_B64.trim())
-        .context("the compiled remote keybox public key is not valid base64")?;
+        .decode(encoded.trim())
+        .context("remote keybox public key is not valid base64")?;
     decoded
         .as_slice()
         .try_into()
-        .map_err(|_| anyhow!("the compiled remote keybox public key must be 32 bytes"))
+        .map_err(|_| anyhow!("remote keybox public key must be 32 bytes"))
+}
+
+fn trusted_pubkey() -> Result<[u8; 32]> {
+    decode_pubkey(TRUSTED_PUBKEY_B64).context("the compiled remote keybox public key is invalid")
 }
 
 fn stage_keybox(payload: &[u8]) -> Result<()> {
@@ -497,7 +502,17 @@ mod tests {
     }
 
     #[test]
-    fn trusted_pubkey_requires_base64_of_thirty_two_bytes() {
-        assert!(trusted_pubkey().is_err(), "empty default must not resolve");
+    fn compiled_trusted_pubkey_is_a_valid_ed25519_key() {
+        assert!(
+            trusted_pubkey().is_ok(),
+            "the shipped remote keybox public key must resolve to 32 bytes"
+        );
+    }
+
+    #[test]
+    fn trusted_pubkey_rejects_invalid_or_wrong_sized_base64() {
+        assert!(decode_pubkey("").is_err(), "empty input must not resolve");
+        assert!(decode_pubkey("not base64!!").is_err());
+        assert!(decode_pubkey("AAAA").is_err());
     }
 }

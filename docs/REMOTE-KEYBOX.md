@@ -51,12 +51,15 @@ Add a `[remote_keybox]` block to `/data/misc/keystore/omk/config.toml`:
 [remote_keybox]
 enabled = true
 base_urls = [
-  "https://keybox.example.com/api/omk",
+  "https://omk.novapi.cc/api/omk",
   "https://fastly.jsdelivr.net/gh/<user>/<repo>@<branch>"
 ]
 interval_secs = 86400
 auto_apply = true
 ```
+
+These are the module defaults; the shipped mirror is
+`https://omk.novapi.cc/api/omk`. Add or reorder entries to use other mirrors.
 
 Each `base_urls` entry may be either a live PHP API base or a static mirror root.
 The client tries both forms per mirror, so one ordered list covers both. See
@@ -69,7 +72,7 @@ the active one was already current.
 
 ## Client change points
 
-Two things must be set on the client side.
+Two things identify the mirror the module trusts.
 
 1. The trusted public key, in `src/remote_keybox.rs`:
 
@@ -77,13 +80,14 @@ Two things must be set on the client side.
    const TRUSTED_PUBKEY_B64: &str = "<base64 Ed25519 public key>";
    ```
 
-   The server prints this value on its first run. Copy it verbatim and rebuild
-   the module. While the value is empty, all remote fetches fail closed and the
-   on-device keybox is used unchanged.
+   The module ships the public key for the default mirror. To use your own
+   server, replace it with the value the server prints on its first run and
+   rebuild the module. While the value is empty, all remote fetches fail closed
+   and the on-device keybox is used unchanged.
 
-2. The mirror list, in `config.toml` under `[remote_keybox].base_urls`. No
-   rebuild is needed to change mirrors; the background task reads the live
-   configuration on every refresh.
+2. The mirror list, in `config.toml` under `[remote_keybox].base_urls`, which
+   defaults to the shipped mirror. No rebuild is needed to change mirrors; the
+   background task reads the live configuration on every refresh.
 
 ## Server
 

@@ -1068,6 +1068,10 @@ impl Default for MainConfig {
     }
 }
 
+/// Default mirror shipped with the module. It serves the signed manifest for
+/// the public key compiled into `remote_keybox`.
+pub const DEFAULT_REMOTE_KEYBOX_BASE_URL: &str = "https://omk.novapi.cc/api/omk";
+
 /// Remote keybox distribution settings.
 ///
 /// When enabled, OMK periodically downloads a signed `manifest.json` and
@@ -1090,8 +1094,8 @@ pub struct RemoteKeyboxConfig {
 impl Default for RemoteKeyboxConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
-            base_urls: Vec::new(),
+            enabled: true,
+            base_urls: vec![DEFAULT_REMOTE_KEYBOX_BASE_URL.to_string()],
             interval_secs: 86_400,
             auto_apply: true,
         }

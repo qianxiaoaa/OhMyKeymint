@@ -164,7 +164,8 @@ configuration settings.
 
 **Update Keybox** refreshes the active keybox from the configured remote
 keybox mirrors using the same signed-manifest flow the module runs on its own
-schedule. It is available only while `[remote_keybox].enabled` is true. The
+schedule. Remote keybox is enabled by default with the mirror shipped in the
+module; the action is available while `[remote_keybox].enabled` is true. The
 WebUI reports whether a newer keybox was applied, whether it was already up to
 date, or that remote keybox is disabled; an already-current keybox leaves the
 active file unchanged.
