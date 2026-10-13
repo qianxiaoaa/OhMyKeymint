@@ -1,6 +1,6 @@
 allow keystore system_file unix_dgram_socket { getattr read recvfrom }
 allow system_file keystore unix_dgram_socket sendto
-allow keystore system_file file { execute getattr map read receive }
+allow keystore system_file file { execute getattr map open read receive }
 
 allow crash_dump keystore process *
 

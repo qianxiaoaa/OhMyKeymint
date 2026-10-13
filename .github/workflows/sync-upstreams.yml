@@ -180,6 +180,11 @@ jobs:
           printf 'zip_url=%s\n' "$zip_url" >> "$GITHUB_OUTPUT"
 
       - name: Update release metadata on master
+        # changelog.md on master is maintained by hand in Keep a Changelog format.
+        # The automatic "本次更新" stub written here used to replace that history
+        # with four plain-text lines on every sync, so only update.json is touched
+        # now. Release notes still come from the "Publish tag and GitHub Release"
+        # step, and the changelog branch snapshot stays with update-changelog.yml.
         env:
           TAG: ${{ needs.sync.outputs.tag }}
           COMMIT_COUNT: ${{ needs.sync.outputs.commit_count }}
@@ -195,13 +200,15 @@ jobs:
           import os
           from pathlib import Path
 
-          Path("changelog.md").write_text(
-              "本次更新：\n"
-              "\n"
-              "- 同步 ITxiao6666/OhMyKeymint 与 yangyang8002/yypm php-server，并按本仓 /api/omk 适配。\n"
-              "- 构建：GitHub Actions（arm64-v8a，debug/release）。\n",
-              encoding="utf-8",
-          )
+          # Kept for reference only: master changelog.md is hand-maintained, so
+          # the generated stub is no longer written over the real history.
+          # Path("changelog.md").write_text(
+          #     "本次更新：\n"
+          #     "\n"
+          #     "- 同步 ITxiao6666/OhMyKeymint 与 yangyang8002/yypm php-server，并按本仓 /api/omk 适配。\n"
+          #     "- 构建：GitHub Actions（arm64-v8a，debug/release）。\n",
+          #     encoding="utf-8",
+          # )
           payload = {
               "version": os.environ["TAG"],
               "versionCode": int(os.environ["COMMIT_COUNT"]),
@@ -211,7 +218,7 @@ jobs:
           Path("update.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
           PY
 
-          git add changelog.md update.json
+          git add update.json
           if git diff --cached --quiet; then
             echo "No release metadata changes to commit."
           else

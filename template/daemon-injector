@@ -112,6 +112,21 @@ pending_restart=0
 last_attempt_pid=
 last_attempt_at=0
 retry_cooldown=15
+failures=0
+
+# Conservative exponential backoff for repeat injection failures, counting
+# consecutive fast attempts the way soterta.sh counts its g_failures:
+# 2s, 5s, 15s, 60s cap.
+backoff_sleep() {
+  case "$1" in
+    ''|*[!0-9]*) delay=2 ;;
+    0) delay=2 ;;
+    1) delay=5 ;;
+    2) delay=15 ;;
+    *) delay=60 ;;
+  esac
+  sleep "$delay"
+}
 
 while true; do
   if ! prepare_injector; then
@@ -138,6 +153,7 @@ while true; do
   if is_injected "$pid"; then
     pending_restart=0
     last_attempt_pid=
+    failures=0
     sleep 5
     continue
   fi
@@ -151,11 +167,22 @@ while true; do
   fi
 
   echo "[injector-daemon] injecting into keystore2 pid=$pid via $TARGET_INJECTOR"
+  started_at=$(date +%s 2>/dev/null)
   "$TARGET_INJECTOR"
   rc=$?
+  now=$(date +%s 2>/dev/null)
   last_attempt_pid=$pid
   last_attempt_at=$(date +%s 2>/dev/null)
   pending_restart=0
   echo "[injector-daemon] injector exited with code $rc"
-  sleep 3
+  # Only a fast crash counts toward the backoff: an exit inside five seconds
+  # carrying a non-zero status. A clean exit (rc=0), an exit past five seconds,
+  # or an unreadable clock breaks the streak back to the plain 2s pause, while
+  # the loop keeps retrying either way.
+  if [ -n "$started_at" ] && [ -n "$now" ] && [ $((now - started_at)) -lt 5 ] && [ "$rc" -ne 0 ]; then
+    failures=$((failures + 1))
+  else
+    failures=0
+  fi
+  backoff_sleep "$failures"
 done

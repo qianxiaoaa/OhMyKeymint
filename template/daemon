@@ -50,6 +50,21 @@ consume_restart_request() {
 cd "$MODDIR" || exit 1
 mkdir -p "$STATE_DIR"
 
+failures=0
+
+# Conservative exponential backoff for repeat crashes, counting consecutive
+# fast failures the way soterta.sh counts its g_failures: 2s, 5s, 15s, 60s cap.
+backoff_sleep() {
+  case "$1" in
+    ''|*[!0-9]*) delay=2 ;;
+    0) delay=2 ;;
+    1) delay=5 ;;
+    2) delay=15 ;;
+    *) delay=60 ;;
+  esac
+  sleep "$delay"
+}
+
 while true; do
   TARGET=$(find_module_keymint)
   if [ -z "$TARGET" ]; then
@@ -60,12 +75,15 @@ while true; do
 
   chmod 0755 "$TARGET"
 
+  started_at=$(date +%s 2>/dev/null)
   "$TARGET" "$@" &
   child_pid=$!
 
+  restart_requested=0
   while kill -0 "$child_pid" 2>/dev/null; do
     if consume_restart_request; then
       echo "[keymint-daemon] restart requested"
+      restart_requested=1
       kill -TERM "$child_pid" 2>/dev/null
       sleep 2
       if kill -0 "$child_pid" 2>/dev/null; then
@@ -79,5 +97,18 @@ while true; do
   wait "$child_pid"
   rc=$?
   echo "[keymint-daemon] keymint exited with code $rc"
-  sleep 2
+  now=$(date +%s 2>/dev/null)
+  # Only a fast crash counts toward the backoff: an exit inside five seconds
+  # carrying a non-zero status. A clean exit (rc=0), an exit past five seconds,
+  # or an unreadable clock breaks the streak back to the plain 2s pause, while
+  # the loop keeps restarting either way. A restart we were asked for is never
+  # a crash: the TERM above leaves rc=143, so the streak resets instead.
+  if [ "$restart_requested" = 1 ]; then
+    failures=0
+  elif [ -n "$started_at" ] && [ -n "$now" ] && [ $((now - started_at)) -lt 5 ] && [ "$rc" -ne 0 ]; then
+    failures=$((failures + 1))
+  else
+    failures=0
+  fi
+  backoff_sleep "$failures"
 done

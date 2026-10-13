@@ -1,3 +1,13 @@
+# Maintains the "changelog" branch snapshot (changelog.md + update.json) that
+# template/module.prop updateJson points at.
+#
+# The cross-repository sync toward TARGET_REPO is disabled: that repository
+# (KernelSU-Modules-Repo/oh_my_keymint) is not reachable and answers 404, so the
+# sync steps skipped on every run while the job still downloaded all release
+# assets for them. The gates below keep the logic for a future reachable module
+# repository; re-enable the "Download release assets" step together with the
+# two "Sync target ..." steps, all three share one condition.
+
 name: Update Changelog and Metadata
 
 on:
@@ -20,6 +30,7 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.PAT || github.token }}
       SOURCE_REPO: ${{ github.repository }}
+      # Unreachable (404). Only the disabled "Sync target ..." steps use it.
       TARGET_REPO: KernelSU-Modules-Repo/oh_my_keymint
 
     steps:
@@ -112,28 +123,6 @@ jobs:
           write_output "source_release_json" "$RELEASE_JSON"
           write_output "asset_dir" "$ASSET_DIR"
 
-          jq -c '.assets[] | {name, url, size, digest}' "$RELEASE_JSON" | while read -r asset; do
-            name=$(jq -r '.name' <<< "$asset")
-            url=$(jq -r '.url' <<< "$asset")
-            digest=$(jq -r '.digest // ""' <<< "$asset")
-            output="$ASSET_DIR/$name"
-
-            curl --fail --location \
-              --header "Authorization: Bearer $GH_TOKEN" \
-              --header "Accept: application/octet-stream" \
-              --output "$output" \
-              "$url"
-
-            if [[ "$digest" == sha256:* ]]; then
-              expected="${digest#sha256:}"
-              actual=$(sha256sum "$output" | awk '{print $1}')
-              if [ "$actual" != "$expected" ]; then
-                echo "::error::Digest mismatch for $name: expected $expected, got $actual"
-                exit 1
-              fi
-            fi
-          done
-
       - name: Checkout changelog branch
         uses: actions/checkout@v7
         with:
@@ -183,6 +172,8 @@ jobs:
 
       - name: Check target repository access
         id: target
+        # Diagnostic only: reports whether TARGET_REPO exists so the disabled
+        # steps below keep showing an explicit skip instead of a silent one.
         run: |
           set -euo pipefail
           if gh api "repos/$TARGET_REPO" --jq '.full_name' >/dev/null 2>&1; then
@@ -192,8 +183,44 @@ jobs:
             echo "Skipping $TARGET_REPO sync; the repository is not accessible."
           fi
 
+      - name: Download release assets
+        # Disabled: the asset bodies are only uploaded to TARGET_REPO, so this
+        # step must be enabled or disabled in lockstep with the two "Sync
+        # target ..." steps below that read $ASSET_DIR.
+        if: ${{ false && steps.target.outputs.available == 'true' }}
+        env:
+          SOURCE_RELEASE_JSON: ${{ steps.release_info.outputs.source_release_json }}
+          ASSET_DIR: ${{ steps.release_info.outputs.asset_dir }}
+        run: |
+          set -euo pipefail
+
+          jq -c '.assets[] | {name, url, size, digest}' "$SOURCE_RELEASE_JSON" | while read -r asset; do
+            name=$(jq -r '.name' <<< "$asset")
+            url=$(jq -r '.url' <<< "$asset")
+            digest=$(jq -r '.digest // ""' <<< "$asset")
+            output="$ASSET_DIR/$name"
+
+            curl --fail --location \
+              --header "Authorization: Bearer $GH_TOKEN" \
+              --header "Accept: application/octet-stream" \
+              --output "$output" \
+              "$url"
+
+            if [[ "$digest" == sha256:* ]]; then
+              expected="${digest#sha256:}"
+              actual=$(sha256sum "$output" | awk '{print $1}')
+              if [ "$actual" != "$expected" ]; then
+                echo "::error::Digest mismatch for $name: expected $expected, got $actual"
+                exit 1
+              fi
+            fi
+          done
+
       - name: Sync target branch and tag
-        if: steps.target.outputs.available == 'true'
+        # Disabled: TARGET_REPO is unreachable (404), so this step can never
+        # push. Restore to `if: steps.target.outputs.available == 'true'` once
+        # TARGET_REPO points at a reachable repository.
+        if: ${{ false && steps.target.outputs.available == 'true' }}
         env:
           SYNC_COMMIT: ${{ steps.changelog.outputs.sync_commit }}
           TAG_NAME: ${{ steps.release_info.outputs.tag_name }}
@@ -242,7 +269,8 @@ jobs:
           fi
 
       - name: Sync target release and assets
-        if: steps.target.outputs.available == 'true'
+        # Disabled with the step above: TARGET_REPO is unreachable (404).
+        if: ${{ false && steps.target.outputs.available == 'true' }}
         env:
           SOURCE_RELEASE_JSON: ${{ steps.release_info.outputs.source_release_json }}
           ASSET_DIR: ${{ steps.release_info.outputs.asset_dir }}

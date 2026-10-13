@@ -26,6 +26,10 @@ chmod 0770 "$SOTER_DIR"
 chown 1017:1017 "$SOTER_DIR"
 
 mkdir -p "$STATE_DIR"
+# ksud runs this stage with umask(0), so pin the state dir down explicitly:
+# it holds the hot-update binaries and the pidfiles.
+chown 0:0 "$STATE_DIR"
+chmod 0750 "$STATE_DIR"
 rm -f "$STATE_DIR/keymint-daemon.pid" "$STATE_DIR/injector-daemon.pid"
 rm -f "$STATE_DIR/restart.keymint" "$STATE_DIR/restart.injector" "$STATE_DIR/restart.all"
 

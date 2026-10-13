@@ -26,6 +26,12 @@ REPO_ROOT = Path(__file__).resolve().parent
 TARGET_ROOT = REPO_ROOT / "target"
 DEFAULT_PLATFORM = 24
 
+# Lower bound for the versionCode taken from `git rev-list --count HEAD`.  A
+# shallow checkout collapses that count to 1, which the root manager reads as a
+# module downgrade, so refuse to package instead of shipping it.  The current
+# upstream history sits at about 220 commits.
+MIN_VERSION_CODE = 100
+
 ABI_TO_TARGET = {
     "arm64-v8a": "aarch64-linux-android",
     "x86_64": "x86_64-linux-android",
@@ -115,6 +121,14 @@ def get_git_commit_count() -> str:
     git_count = result.stdout.strip()
     if not git_count.isdigit():
         raise ValueError(f"Git commit count must be numeric only, got: {git_count}")
+    if int(git_count) < MIN_VERSION_CODE:
+        print(
+            f"error: git commit count {git_count} is below the minimum versionCode "
+            f"{MIN_VERSION_CODE}; the repository looks like a shallow clone. Fetch the "
+            "full history (for example `git fetch --unshallow`) before building.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     return git_count
 
 

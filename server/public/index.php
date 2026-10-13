@@ -97,16 +97,36 @@ function manifestKeybox() {
     return isset($m['keybox']) ? $m['keybox'] : null;
 }
 
+// ---- 领取埋点（fail-safe）----
+// 一次性 require 共享库；文件缺失（部署漏拷 lib/）时定义同名空桩，保证任何情况下
+// 分发响应都不受影响。usage_log_event 内部已全程 try/catch，这里只是第二道保险。
+$_usageLogLib = __DIR__ . '/lib/usage_log.php';
+if (is_file($_usageLogLib)) require_once $_usageLogLib;
+if (!function_exists('usage_log_event')) {
+    function usage_log_event(string $action, string $ip, string $ua, ?string $sha256, string $serialsCsv): void {}
+}
+
 switch ($action) {
     case 'keybox': {
         if (!is_file($keyboxFile)) fail(404, 'no keybox');
         $data = file_get_contents($keyboxFile);
+        $kbSha = hash('sha256', $data);   // 与下面 X-SHA256 头同一个值，供埋点复用，不重复计算
         header('Content-Type: application/xml');
-        header('X-SHA256: ' . hash('sha256', $data));
+        header('X-SHA256: ' . $kbSha);
         $kb = manifestKeybox();
         if ($kb && !empty($kb['signature'])) {
             header('X-Signature: ' . $kb['signature']);
         }
+        // 追加式埋点，紧挨 echo 之前，不改任何 header/exit 顺序与响应字节。
+        // ip 取 REMOTE_ADDR 原值：分发接口全网开放，acClientIp() 会为反挂限流信任
+        // XFF，而埋点只想如实记下直连来源，故刻意不复用 acClientIp。
+        // 序列号不每次解析证书链（开销敏感），直接取 manifest 里的 keybox.validity.serials；
+        // 取不到传空串，二期可在 update.php 落一份扁平 serials 后补齐。
+        usage_log_event('keybox', (string)($_SERVER['REMOTE_ADDR'] ?? ''),
+            (string)($_SERVER['HTTP_USER_AGENT'] ?? ''), $kbSha,
+            (is_array($kb) && isset($kb['validity']['serials']))
+                ? implode(',', array_map('strval', (array)$kb['validity']['serials']))
+                : '');
         echo $data;
         break;
     }
@@ -274,6 +294,16 @@ switch ($action) {
     default: {
         if (!is_file($manifestFile)) fail(404, 'no manifest (run update_keybox.php first)');
         header('Content-Type: application/json');
+        // 追加式埋点，echo 原始文件之前。sha256/序列号取自 manifest 自身的 keybox
+        // 对象（manifestKeybox 读的就是下面 echo 的同一份 data/manifest.json，不重复
+        // 计算响应体、不解析证书链）。埋点失败静默，不影响返回的 JSON 字节。
+        $kbM = manifestKeybox();
+        usage_log_event('manifest', (string)($_SERVER['REMOTE_ADDR'] ?? ''),
+            (string)($_SERVER['HTTP_USER_AGENT'] ?? ''),
+            (is_array($kbM) && !empty($kbM['sha256'])) ? (string)$kbM['sha256'] : null,
+            (is_array($kbM) && isset($kbM['validity']['serials']))
+                ? implode(',', array_map('strval', (array)$kbM['validity']['serials']))
+                : '');
         echo file_get_contents($manifestFile);
         break;
     }

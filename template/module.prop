@@ -4,4 +4,5 @@ version=${versionName}
 versionCode=${versionCode}
 author=James Clef,ITxiao6666,浅笑呐
 description=Custom keystore implementation for Android Keystore Spoofer
+home=https://github.com/qianxiaoaa/OhMyKeymint
 updateJson=https://raw.githubusercontent.com/qianxiaoaa/OhMyKeymint/changelog/update.json

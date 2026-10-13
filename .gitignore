@@ -26,6 +26,10 @@ Cargo.lock
 hex.txt
 parcel.bin
 
+# Ad-hoc host build leftovers from `rustc` scratch runs on Windows.
+rust_out.exe
+/rust_out.exe
+
 src/aidl.rs
 cert.crt
 cert.der

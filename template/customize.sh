@@ -3,7 +3,8 @@ SKIPUNZIP=1
 
 SONAME="Oh My Keymint"
 SUPPORTED_ABIS="arm64 x64"
-MIN_SDK=29
+# The README requires Android 12+, i.e. API level 31; keep the two in sync.
+MIN_SDK=31
 
 if [ "$BOOTMODE" ] && [ "$KSU" ]; then
   ui_print "- Installing from KernelSU app"
@@ -27,6 +28,10 @@ VERSION=$(grep_prop version "${TMPDIR}/module.prop")
 ui_print "- Installing $SONAME $VERSION"
 
 # check architecture
+if [ -z "$ARCH" ]; then
+  ui_print "! Unable to detect device architecture"
+  abort "! Empty ARCH, can not verify a supported platform"
+fi
 support=false
 for abi in $SUPPORTED_ABIS
 do
@@ -41,6 +46,10 @@ else
 fi
 
 # check android
+if [ -z "$API" ]; then
+  ui_print "! Unable to detect the SDK version"
+  abort "! Empty API, can not check against MIN_SDK=$MIN_SDK"
+fi
 if [ "$API" -lt $MIN_SDK ]; then
   ui_print "! Unsupported sdk: $API"
   abort "! Minimal supported sdk is $MIN_SDK"
@@ -73,8 +82,13 @@ extract "$ZIPFILE" 'injector.toml'   "$MODPATH"
 extract "$ZIPFILE" 'keybox.xml'      "$MODPATH"
 extract "$ZIPFILE" 'webroot.manifest' "$MODPATH"
 
+# Defence in depth for the manifest unpacked from the zip: reject parent
+# directory hops and absolute paths before the webroot/ prefix is accepted.
+# The bare ".." forms are matched per path segment, so a legal file name that
+# merely contains two dots in a row is not rejected.
 while IFS= read -r asset || [ -n "$asset" ]; do
   case "$asset" in
+    /*|..|../*|*/..|*/../*) abort "! Invalid WebUI asset path: $asset" ;;
     webroot/*) ;;
     *) abort "! Invalid WebUI asset path: $asset" ;;
   esac

@@ -909,6 +909,65 @@ fn certificate_signature_is_valid(child_der: &[u8], issuer_der: &[u8]) -> bool {
     child.verify_signature(Some(issuer.public_key())).is_ok()
 }
 
+/// Return the whole seconds between the Unix epoch and `now`. The value is
+/// clamped to zero before 1970, which only affects hand-crafted fixtures.
+fn unix_epoch_seconds(now: SystemTime) -> u64 {
+    now.duration_since(SystemTime::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or_default()
+}
+
+/// Compare the leaf `notAfter` of a chain with the current wall clock.
+///
+/// `None` means the leaf cannot be parsed; the result never feeds a
+/// validation decision, it only drives the expiry warning below.
+fn chain_leaf_is_expired(chain: &[keymint::Certificate], now: SystemTime) -> Option<bool> {
+    let leaf = chain.first()?;
+    let (_, parsed) = parse_x509_certificate(&leaf.encoded_certificate).ok()?;
+    let not_after = parsed.validity().not_after.timestamp();
+    Some(not_after < 0 || (not_after as u64) < unix_epoch_seconds(now))
+}
+
+/// Build the warning line for one expired chain, or `None` while the leaf
+/// is still inside its validity window. The leaf is parsed again here so
+/// this informational path stays fully independent from
+/// `chain_signatures_are_valid`, which intentionally checks signatures but
+/// not validity periods.
+fn chain_expiry_warning(
+    algorithm: &str,
+    chain: &[keymint::Certificate],
+    now: SystemTime,
+) -> Option<String> {
+    if !chain_leaf_is_expired(chain, now)? {
+        return None;
+    }
+    let leaf = chain.first()?;
+    let (_, parsed) = parse_x509_certificate(&leaf.encoded_certificate).ok()?;
+    let not_after = &parsed.validity().not_after;
+    // Reuse the RFC 2822 rendering from the inspector, with the infallible
+    // Display form as a fallback for dates outside the RFC 2822 range.
+    let expires = not_after
+        .to_rfc2822()
+        .unwrap_or_else(|_| not_after.to_string());
+    Some(format!("keybox {algorithm} attestation chain expired on {expires}"))
+}
+
+/// Log one warning per expired leaf chain of a keybox that just became the
+/// active installation. This is observability only: it never aborts, and it
+/// cannot change the installation result or any later signing decision.
+fn warn_expired_attestation_chains(keybox: &KeyBox) {
+    let now = SystemTime::now();
+    for (algorithm, info) in [
+        ("EC", keybox.ec_info.as_ref()),
+        ("RSA", keybox.rsa_info.as_ref()),
+    ] {
+        let Some(info) = info else { continue };
+        if let Some(message) = chain_expiry_warning(algorithm, &info.chain, now) {
+            warn!("{message}");
+        }
+    }
+}
+
 fn keybox_level_from_subject(subject: &x509_cert::name::Name) -> KeyboxLevel {
     // Newer RKP certificates use O=TEE/StrongBox. Older factory keyboxes
     // commonly encode the same value as the X.520 title attribute (T=TEE),
@@ -1428,6 +1487,7 @@ fn install_keybox(
 ) -> bool {
     let already_loaded = KEYBOX_RUNTIME_LOADED.load(Ordering::Acquire);
     let new_identity = new_keybox.identity_digest();
+    warn_expired_attestation_chains(&new_keybox);
     let changed = {
         let mut keybox = KEYBOX.write().unwrap();
         let changed = keybox.identity_digest() != new_identity;
@@ -1733,6 +1793,42 @@ mod tests {
             }
         }
         assert!(inspector_for_chain("RSA", &[]).is_none());
+    }
+
+    #[test]
+    fn chain_expiry_matches_the_bundled_leaf_validity_windows() {
+        let keybox = KeyBox::from_xml_str(BUNDLED_KEYBOX_XML).unwrap();
+        let ec_chain = &keybox.ec_info.as_ref().unwrap().chain;
+        let rsa_chain = &keybox.rsa_info.as_ref().unwrap().chain;
+        let at = |secs| SystemTime::UNIX_EPOCH + Duration::from_secs(secs);
+        // The bundled template keybox is refreshed now and then, so the
+        // boundaries are read from the leaf certificates instead of pinning
+        // their dates here. Parsing mirrors chain_leaf_is_expired itself.
+        let leaf_not_after = |chain: &[keymint::Certificate]| -> u64 {
+            let leaf = chain.first().unwrap();
+            let (_, parsed) = parse_x509_certificate(&leaf.encoded_certificate).unwrap();
+            parsed.validity().not_after.timestamp().max(0) as u64
+        };
+        let ec_not_after = leaf_not_after(&ec_chain[..]);
+        let rsa_not_after = leaf_not_after(&rsa_chain[..]);
+
+        // The expiry edge is exclusive: at notAfter the leaf is still valid,
+        // one second later it is not, and the warning follows that flip.
+        assert_eq!(chain_leaf_is_expired(ec_chain, at(ec_not_after)), Some(false));
+        assert_eq!(chain_leaf_is_expired(ec_chain, at(ec_not_after + 1)), Some(true));
+        assert_eq!(chain_leaf_is_expired(rsa_chain, at(rsa_not_after)), Some(false));
+        assert_eq!(chain_leaf_is_expired(rsa_chain, at(rsa_not_after + 1)), Some(true));
+
+        let warning = chain_expiry_warning("EC", ec_chain, at(ec_not_after + 1)).unwrap();
+        assert!(warning.contains("keybox"));
+        assert!(warning.contains("attestation chain expired"));
+
+        let mut malformed = ec_chain.clone();
+        malformed[0].encoded_certificate = vec![0xff, 0x00];
+        assert_eq!(chain_leaf_is_expired(&malformed, at(ec_not_after + 1)), None);
+        assert!(chain_expiry_warning("EC", &malformed, at(ec_not_after + 1)).is_none());
+
+        assert_eq!(unix_epoch_seconds(SystemTime::UNIX_EPOCH), 0);
     }
 
     #[test]

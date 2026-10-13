@@ -22,6 +22,60 @@ on:
         default: ""
 
 jobs:
+  lint:
+    if: ${{ github.event_name != 'push' || github.event.head_commit == null || !contains(github.event.head_commit.message, '[skip ci]') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v7
+      with:
+        submodules: recursive
+
+    - name: Install ShellCheck
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y shellcheck
+
+    - name: ShellCheck module scripts
+      # TODO: drop --severity=error and gate on the full ShellCheck report once
+      # the inherited template scripts are cleaned up; the error-only threshold
+      # keeps this job useful without failing on existing style findings.
+      # customize.sh and verify.sh are deliberately left out: the Magisk/KSU
+      # installer sources them without a shebang (upstream convention), so the
+      # error-level SC2148 would fail every run. The remaining scripts are
+      # listed explicitly instead of globbing template/*.sh.
+      run: |
+        shellcheck -x --severity=error \
+          template/service.sh \
+          template/post-fs-data.sh \
+          template/uninstall.sh \
+          template/soterta.sh \
+          template/daemon \
+          template/daemon-injector
+
+    - name: Install Rust toolchain
+      uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        toolchain: nightly
+        components: rustfmt
+
+    - name: Check Rust formatting
+      # Advisory for now: the workspace still carries legacy >100-column and
+      # otherwise unformatted code, so the first fmt --check run is expected to
+      # be red. Flip this to a hard gate once that formatting backlog is cleared.
+      continue-on-error: true
+      run: cargo fmt --all -- --check
+
+    - name: Check workflow syntax
+      # Advisory step: drop continue-on-error once the workflows are confirmed
+      # clean, so actionlint findings become a hard gate like the steps above.
+      continue-on-error: true
+      run: |
+        bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+        ./actionlint -color
+
   build-boringssl:
     if: ${{ github.event_name != 'push' || github.event.head_commit == null || !contains(github.event.head_commit.message, '[skip ci]') }}
     runs-on: ubuntu-latest
