@@ -7,7 +7,8 @@
   - 卸载改为按 pidfile 停止守护进程并重启 keystore2 回到原厂通路。
   - keybox 证书链过期告警（仅日志）。
 - 构建与 CI：浅克隆拒绝打包（`MIN_VERSION_CODE`），新增 lint job，停止覆写 changelog.md，清理误提交的构建产物。
-- 服务端：新增独立部署的 qianxiao 管理后台与领取使用埋点（不进入模块包）。
+- 服务端：新增独立部署的管理后台与领取使用埋点（不进入模块包）。
 
 模块构建：GitHub Actions（arm64-v8a，debug/release）。
 
+**Full Changelog**: https://github.com/qianxiaoaa/OhMyKeymint/compare/v1.3.6-220-b60dfc9...v1.3.6-223-49ad8e6
