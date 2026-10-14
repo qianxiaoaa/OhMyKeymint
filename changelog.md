@@ -1,14 +1,10 @@
 本次更新：
 
-- 模块脚本与 Rust 侧健壮性修复：
-  - 安装最低要求对齐 Android 12（API 31），并补齐 ARCH/API 缺失校验与 webroot 资产路径校验。
-  - service.sh 重写 resetprop 多管理器回退链（KernelSU/Magisk/APatch/ksud），启动改为探测 `dev.bootcomplete`，新增日志轮转与更严格的进程匹配。
-  - daemon / daemon-injector 新增崩溃指数退避。
-  - 卸载改为按 pidfile 停止守护进程并重启 keystore2 回到原厂通路。
-  - keybox 证书链过期告警（仅日志）。
-- 构建与 CI：浅克隆拒绝打包（`MIN_VERSION_CODE`），新增 lint job，停止覆写 changelog.md，清理误提交的构建产物。
-- 服务端：新增独立部署的管理后台与领取使用埋点（不进入模块包）。
+- 修复 PIF 指纹下载受 `api.github.com` 限流导致的 403：未认证 REST API 每 IP 每小时仅 60 次，共享出口 IP 会被限流。
+  - 改用 `github.com` HTML 端点：`releases/latest` 的 302 `Location` 取当前 tag，`releases/expanded_assets/<tag>` 扫描并校验 JSON 资产名，`releases.atom` 作为 tag 回退。
+  - 资产下载仍沿用 gh-proxy 优先、`github.com` 直连回退的策略；`github.com` 下载重定向到 `release-assets.githubusercontent.com` / `objects.githubusercontent.com` 的签名 CDN 链接照常放行。
 
 模块构建：GitHub Actions（arm64-v8a，debug/release）。
 
-**Full Changelog**: https://github.com/qianxiaoaa/OhMyKeymint/compare/v1.3.6-220-b60dfc9...v1.3.6-223-49ad8e6
+**Full Changelog**: https://github.com/qianxiaoaa/OhMyKeymint/compare/v1.3.6-223-49ad8e6...v1.3.6-225-5dbe86b
+
