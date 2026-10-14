@@ -15,7 +15,7 @@ use pif_common::{
     validate_product, DeviceEntry, PifProfile, MAX_CATALOG_ENTRIES, MAX_PROFILE_BYTES,
     MAX_PROP_BYTES,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use ureq::http::Uri;
 
 use crate::{root_path, security_patch, webui_http};
@@ -23,10 +23,16 @@ use crate::{root_path, security_patch, webui_http};
 const PROFILE_PATH: &str = root_path!("data/pif_fingerprint.json");
 const FEED_OWNER: &str = "Elcapitanoe";
 const FEED_REPO: &str = "PIF-Config-Generator";
-const RELEASE_API_URL: &str =
-    "https://api.github.com/repos/Elcapitanoe/PIF-Config-Generator/releases/latest";
+// The feed metadata is read from the `github.com` HTML endpoints rather than
+// the REST API. The unauthenticated `api.github.com` quota is only 60 requests
+// per hour per IP, so a shared carrier NAT exhausts it and answers HTTP 403;
+// the HTML `releases/latest` redirect and the `expanded_assets` fragment carry
+// the same tag and asset list without that limit.
+const LATEST_RELEASE_PATH: &str = "/Elcapitanoe/PIF-Config-Generator/releases/latest";
+const RELEASE_FEED_PATH: &str = "/Elcapitanoe/PIF-Config-Generator/releases.atom";
+const RELEASE_TAG_PREFIX: &str = "/Elcapitanoe/PIF-Config-Generator/releases/tag/";
+const EXPANDED_ASSETS_PREFIX: &str = "/Elcapitanoe/PIF-Config-Generator/releases/expanded_assets/";
 const PROXY_HOST: &str = "gh-proxy.com";
-const API_HOST: &str = "api.github.com";
 const GITHUB_HOST: &str = "github.com";
 const RELEASE_ASSET_HOSTS: [&str; 2] = [
     "release-assets.githubusercontent.com",
@@ -40,42 +46,39 @@ const PROCESS_NAMES: [&[u8]; 2] = [b"com.google.android.gms.unstable", b"com.and
 
 #[derive(Debug, Clone)]
 enum FeedResource {
-    Release,
+    LatestTag,
+    ReleaseFeed,
+    AssetList { tag: String },
     Profile { tag: String, asset: String },
 }
 
 impl FeedResource {
     fn max_bytes(&self) -> usize {
         match self {
-            Self::Release => MAX_RELEASE_BYTES,
+            Self::LatestTag => MAX_RELEASE_BYTES,
+            Self::ReleaseFeed => MAX_RELEASE_BYTES,
+            Self::AssetList { .. } => MAX_RELEASE_BYTES,
             Self::Profile { .. } => MAX_PROP_BYTES,
         }
     }
 
     fn size_label(&self) -> &'static str {
         match self {
-            Self::Release => "256 KiB",
+            Self::LatestTag => "256 KiB",
+            Self::ReleaseFeed => "256 KiB",
+            Self::AssetList { .. } => "256 KiB",
             Self::Profile { .. } => "4 KiB",
         }
     }
 
     fn label(&self) -> &'static str {
         match self {
-            Self::Release => "PIF release catalog",
+            Self::LatestTag => "PIF release channel",
+            Self::ReleaseFeed => "PIF release feed",
+            Self::AssetList { .. } => "PIF release asset list",
             Self::Profile { .. } => "PIF device profile",
         }
     }
-}
-
-#[derive(Debug, Deserialize)]
-struct GithubRelease {
-    tag_name: String,
-    assets: Vec<GithubAsset>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GithubAsset {
-    name: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -128,30 +131,28 @@ pub fn disable_fingerprint() -> Result<String> {
 }
 
 fn load_feed() -> Result<Vec<(DeviceEntry, PifProfile)>> {
-    let contents = download_feed(&FeedResource::Release)?;
-    let release: GithubRelease = serde_json::from_str(&contents)
-        .context("failed to parse the PIF release catalog")?;
-    if !is_release_tag(&release.tag_name) {
-        bail!("PIF release tag is invalid");
+    let tag = latest_release_tag()?;
+    let asset_resource = FeedResource::AssetList { tag: tag.clone() };
+    let asset_html = download_feed(&asset_resource)?;
+    let names = parse_asset_names(&asset_html, &tag);
+    if names.is_empty() {
+        bail!("PIF device catalog is empty");
+    }
+    if names.len() > MAX_CATALOG_ENTRIES {
+        bail!("PIF device catalog contains more than {MAX_CATALOG_ENTRIES} entries");
     }
 
     let mut entries = Vec::new();
     let mut products = BTreeSet::new();
-    for asset in &release.assets {
-        if !is_profile_asset_name(&asset.name) {
-            continue;
-        }
-        if entries.len() >= MAX_CATALOG_ENTRIES {
-            bail!("PIF device catalog contains more than {MAX_CATALOG_ENTRIES} entries");
-        }
+    for asset in names {
         let resource = FeedResource::Profile {
-            tag: release.tag_name.clone(),
-            asset: asset.name.clone(),
+            tag: tag.clone(),
+            asset: asset.clone(),
         };
         let profile_json = download_feed(&resource)?;
         let profile = PifProfile::from_feed(profile_json.as_bytes())
             .map_err(anyhow::Error::msg)
-            .with_context(|| format!("downloaded PIF profile {} failed validation", asset.name))?;
+            .with_context(|| format!("downloaded PIF profile {asset} failed validation"))?;
         let device = DeviceEntry {
             model: profile.model.clone(),
             product: profile.product.clone(),
@@ -165,15 +166,136 @@ fn load_feed() -> Result<Vec<(DeviceEntry, PifProfile)>> {
         }
         entries.push((device, profile));
     }
-    if entries.is_empty() {
-        bail!("PIF device catalog is empty");
-    }
     Ok(entries)
+}
+
+/// Resolve the current release tag without the rate-limited REST API.
+///
+/// `releases/latest` answers with a 302 whose `Location` ends in
+/// `releases/tag/<tag>`. The `releases.atom` feed is used as a fallback for the
+/// rare network where the redirect is stripped.
+fn latest_release_tag() -> Result<String> {
+    let channel = FeedResource::LatestTag;
+    let origin = github_url(&channel)?;
+    let policy = download_policy(&channel);
+    let from_redirect = |url: &str| -> Result<String> {
+        let uri: Uri = url
+            .parse()
+            .with_context(|| format!("{} URL is invalid", channel.label()))?;
+        if !is_allowed_feed_uri(&uri, &channel) {
+            bail!("{} URL is outside the fixed feed paths", channel.label());
+        }
+        let location = webui_http::fetch_redirect_location(uri, &policy, |uri| {
+            is_allowed_feed_uri(uri, &channel)
+        })?;
+        let base: Uri = origin
+            .parse()
+            .with_context(|| format!("{} URL is invalid", channel.label()))?;
+        let resolved = webui_http::resolve_redirect(&base, &location, channel.label())?;
+        let tag = resolved
+            .path()
+            .strip_prefix(RELEASE_TAG_PREFIX)
+            .ok_or_else(|| {
+                anyhow!(
+                    "{} redirected outside the release tag path",
+                    channel.label()
+                )
+            })?;
+        if !is_release_tag(tag) {
+            bail!("PIF release tag is invalid");
+        }
+        Ok(tag.to_string())
+    };
+
+    let mut primary_error = None;
+    for url in feed_candidates(&origin) {
+        match from_redirect(&url) {
+            Ok(tag) => return Ok(tag),
+            Err(error) => primary_error = Some(error),
+        }
+    }
+
+    let feed = FeedResource::ReleaseFeed;
+    let feed_origin = github_url(&feed)?;
+    let feed_policy = download_policy(&feed);
+    let from_atom = |url: &str| -> Result<String> {
+        let uri: Uri = url
+            .parse()
+            .with_context(|| format!("{} URL is invalid", feed.label()))?;
+        if !is_allowed_feed_uri(&uri, &feed) {
+            bail!("{} URL is outside the fixed feed paths", feed.label());
+        }
+        let body = webui_http::download_https_utf8(uri, &feed_policy, |uri| {
+            is_allowed_feed_uri(uri, &feed)
+        })?;
+        atom_first_tag(&body).ok_or_else(|| anyhow!("PIF release feed has no usable tag"))
+    };
+    let mut atom_error = None;
+    for url in feed_candidates(&feed_origin) {
+        match from_atom(&url) {
+            Ok(tag) => return Ok(tag),
+            Err(error) => atom_error = Some(error),
+        }
+    }
+
+    let primary_error = primary_error
+        .map(|error| format!("{error:#}"))
+        .unwrap_or_else(|| "no candidate succeeded".to_string());
+    let atom_error = atom_error
+        .map(|error| format!("{error:#}"))
+        .unwrap_or_else(|| "no candidate succeeded".to_string());
+    bail!(
+        "both PIF feed sources failed; primary source error: {primary_error}; feed fallback error: {atom_error}"
+    )
+}
+
+/// Extract the newest tag from a GitHub `releases.atom` feed. Entries are
+/// ordered newest-first, so the first `releases/tag/<tag>` occurrence wins. The
+/// repository tags carry a leading `v` (for example `v2026.10.11`).
+fn atom_first_tag(body: &str) -> Option<String> {
+    for tail in body.split("releases/tag/").skip(1) {
+        let rest = tail.strip_prefix('v').unwrap_or(tail);
+        let digits: String = rest
+            .chars()
+            .take_while(|character| character.is_ascii_digit() || *character == '.')
+            .collect();
+        let tag = format!("v{digits}");
+        if is_release_tag(&tag) {
+            return Some(tag);
+        }
+    }
+    None
+}
+
+/// Collect the validated `.json` asset names referenced by a
+/// `releases/expanded_assets/<tag>` fragment.
+fn parse_asset_names(html: &str, tag: &str) -> Vec<String> {
+    let needle = format!("/releases/download/{tag}/");
+    let mut names = BTreeSet::new();
+    for tail in html.split(&needle).skip(1) {
+        let name: String = tail
+            .chars()
+            .take_while(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
+            })
+            .collect();
+        if is_profile_asset_name(&name) {
+            names.insert(name);
+        }
+    }
+    names.into_iter().collect()
 }
 
 fn github_url(resource: &FeedResource) -> Result<String> {
     Ok(match resource {
-        FeedResource::Release => RELEASE_API_URL.to_string(),
+        FeedResource::LatestTag => format!("https://{GITHUB_HOST}{LATEST_RELEASE_PATH}"),
+        FeedResource::ReleaseFeed => format!("https://{GITHUB_HOST}{RELEASE_FEED_PATH}"),
+        FeedResource::AssetList { tag } => {
+            if !is_release_tag(tag) {
+                bail!("{} URL is outside the fixed feed paths", resource.label());
+            }
+            format!("https://{GITHUB_HOST}{EXPANDED_ASSETS_PREFIX}{tag}")
+        }
         FeedResource::Profile { tag, asset } => {
             if !is_release_tag(tag) || !is_profile_asset_name(asset) {
                 bail!("{} URL is outside the fixed feed paths", resource.label());
@@ -187,10 +309,15 @@ fn proxy_url(origin: &str) -> String {
     format!("https://{PROXY_HOST}/{origin}")
 }
 
-fn download_feed(resource: &FeedResource) -> Result<String> {
-    let origin = github_url(resource)?;
-    let primary = proxy_url(&origin);
-    let policy = webui_http::DownloadPolicy {
+/// Proxy first, then the origin, matching the module-wide "prefer gh-proxy for
+/// GitHub" policy. The metadata endpoints cannot be proxied, so the second
+/// candidate is the one that normally answers.
+fn feed_candidates(origin: &str) -> [String; 2] {
+    [proxy_url(origin), origin.to_string()]
+}
+
+fn download_policy(resource: &FeedResource) -> webui_http::DownloadPolicy {
+    webui_http::DownloadPolicy {
         resource: resource.label(),
         redirect_allowlist: "the fixed PIF-Config-Generator release paths",
         max_bytes: resource.max_bytes(),
@@ -198,7 +325,12 @@ fn download_feed(resource: &FeedResource) -> Result<String> {
         max_redirects: MAX_REDIRECTS,
         timeout: REQUEST_TIMEOUT,
         connect_timeout: CONNECT_TIMEOUT,
-    };
+    }
+}
+
+fn download_feed(resource: &FeedResource) -> Result<String> {
+    let origin = github_url(resource)?;
+    let policy = download_policy(resource);
     let fetch = |url: &str| -> Result<String> {
         let uri: Uri = url
             .parse()
@@ -208,6 +340,7 @@ fn download_feed(resource: &FeedResource) -> Result<String> {
         }
         webui_http::download_https_utf8(uri, &policy, |uri| is_allowed_feed_uri(uri, resource))
     };
+    let [primary, origin] = feed_candidates(&origin);
     match fetch(&primary) {
         Ok(contents) => Ok(contents),
         Err(primary_error) => fetch(&origin).with_context(|| {
@@ -258,34 +391,46 @@ fn is_allowed_feed_uri(uri: &Uri, resource: &FeedResource) -> bool {
         return false;
     };
     match resource {
-        FeedResource::Release => {
+        FeedResource::LatestTag => {
+            uri.query().is_none() && exact_github_path(host, uri.path(), LATEST_RELEASE_PATH)
+        }
+        FeedResource::ReleaseFeed => {
+            uri.query().is_none() && exact_github_path(host, uri.path(), RELEASE_FEED_PATH)
+        }
+        FeedResource::AssetList { tag } => {
             uri.query().is_none()
-                && ((host.eq_ignore_ascii_case(PROXY_HOST)
-                    && uri.path() == format!("/{RELEASE_API_URL}"))
-                    || (host.eq_ignore_ascii_case(API_HOST)
-                        && uri.path()
-                            == format!("/repos/{FEED_OWNER}/{FEED_REPO}/releases/latest")))
+                && is_release_tag(tag)
+                && exact_github_path(host, uri.path(), &format!("{EXPANDED_ASSETS_PREFIX}{tag}"))
         }
         FeedResource::Profile { tag, asset } => {
             if !is_release_tag(tag) || !is_profile_asset_name(asset) {
                 return false;
             }
-            let origin =
-                format!("https://github.com/{FEED_OWNER}/{FEED_REPO}/releases/download/{tag}/{asset}");
             let github_path = format!("/{FEED_OWNER}/{FEED_REPO}/releases/download/{tag}/{asset}");
-            if host.eq_ignore_ascii_case(PROXY_HOST) {
-                uri.query().is_none() && uri.path() == format!("/{origin}")
-            } else if host.eq_ignore_ascii_case(GITHUB_HOST) {
-                uri.query().is_none() && uri.path() == github_path
-            } else if RELEASE_ASSET_HOSTS
-                .iter()
-                .any(|allowed| host.eq_ignore_ascii_case(allowed))
-            {
-                !uri.path().is_empty() && !uri.path().contains("..")
+            if uri.query().is_none() && exact_github_path(host, uri.path(), &github_path) {
+                true
             } else {
-                false
+                // The GitHub download redirect lands on a signed CDN URL that
+                // carries a query string, so those hosts are matched by name.
+                RELEASE_ASSET_HOSTS
+                    .iter()
+                    .any(|allowed| host.eq_ignore_ascii_case(allowed))
+                    && !uri.path().is_empty()
+                    && !uri.path().contains("..")
             }
         }
+    }
+}
+
+/// Accept the direct `github.com/<github_path>` form and the gh-proxy
+/// `gh-proxy.com/https://github.com/<github_path>` form for one fixed path.
+fn exact_github_path(host: &str, path: &str, github_path: &str) -> bool {
+    if host.eq_ignore_ascii_case(GITHUB_HOST) {
+        path == github_path
+    } else if host.eq_ignore_ascii_case(PROXY_HOST) {
+        path == format!("/https://{GITHUB_HOST}{github_path}")
+    } else {
+        false
     }
 }
 
@@ -475,7 +620,13 @@ mod tests {
         for tag in ["v2026.10.11", "v2026.01.01"] {
             assert!(is_release_tag(tag), "{tag}");
         }
-        for tag in ["2026.10.11", "v2026.10", "v2026.10.11.1", "v2026.10.11a", "v../10.11"] {
+        for tag in [
+            "2026.10.11",
+            "v2026.10",
+            "v2026.10.11.1",
+            "v2026.10.11a",
+            "v../10.11",
+        ] {
             assert!(!is_release_tag(tag), "{tag}");
         }
         for name in [
@@ -498,26 +649,92 @@ mod tests {
 
     #[test]
     fn feed_allowlist_accepts_only_exact_resource_paths() {
-        let catalog = FeedResource::Release;
+        let channel = FeedResource::LatestTag;
         for url in [
-            "https://gh-proxy.com/https://api.github.com/repos/Elcapitanoe/PIF-Config-Generator/releases/latest",
-            "https://gh-proxy.com:443/https://api.github.com/repos/Elcapitanoe/PIF-Config-Generator/releases/latest",
-            "https://api.github.com/repos/Elcapitanoe/PIF-Config-Generator/releases/latest",
-            "https://api.github.com:443/repos/Elcapitanoe/PIF-Config-Generator/releases/latest",
+            "https://github.com/Elcapitanoe/PIF-Config-Generator/releases/latest",
+            "https://github.com:443/Elcapitanoe/PIF-Config-Generator/releases/latest",
+            "https://gh-proxy.com/https://github.com/Elcapitanoe/PIF-Config-Generator/releases/latest",
         ] {
             assert!(
-                is_allowed_feed_uri(&url.parse().unwrap(), &catalog),
+                is_allowed_feed_uri(&url.parse().unwrap(), &channel),
                 "{url}"
             );
         }
         for url in [
-            "http://gh-proxy.com/https://api.github.com/repos/Elcapitanoe/PIF-Config-Generator/releases/latest",
-            "https://gh-proxy.com/https://api.github.com/repos/other/PIF-Config-Generator/releases/latest",
-            "https://api.github.com/repos/Elcapitanoe/PIF-Config-Generator/releases/latest?page=1",
-            "https://api.github.com.evil.example/repos/Elcapitanoe/PIF-Config-Generator/releases/latest",
+            "http://github.com/Elcapitanoe/PIF-Config-Generator/releases/latest",
+            "https://github.com/Elcapitanoe/PIF-Config-Generator/releases/latest/",
+            "https://github.com/other/PIF-Config-Generator/releases/latest",
+            "https://github.com/Elcapitanoe/PIF-Config-Generator/releases/latest?page=1",
+            "https://github.com.evil.example/Elcapitanoe/PIF-Config-Generator/releases/latest",
+            "https://gh-proxy.com/https://github.com/Elcapitanoe/PIF-Config-Generator/releases/latest?page=1",
         ] {
-            assert!(!is_allowed_feed_uri(&url.parse().unwrap(), &catalog), "{url}");
+            assert!(!is_allowed_feed_uri(&url.parse().unwrap(), &channel), "{url}");
         }
+
+        let feed = FeedResource::ReleaseFeed;
+        assert!(is_allowed_feed_uri(
+            &"https://github.com/Elcapitanoe/PIF-Config-Generator/releases.atom"
+                .parse()
+                .unwrap(),
+            &feed
+        ));
+        assert!(!is_allowed_feed_uri(
+            &"https://github.com/Elcapitanoe/PIF-Config-Generator/releases.atom?page=2"
+                .parse()
+                .unwrap(),
+            &feed
+        ));
+
+        let assets = FeedResource::AssetList {
+            tag: "v2026.10.11".to_string(),
+        };
+        assert!(is_allowed_feed_uri(
+            &"https://github.com/Elcapitanoe/PIF-Config-Generator/releases/expanded_assets/v2026.10.11"
+                .parse()
+                .unwrap(),
+            &assets
+        ));
+        assert!(!is_allowed_feed_uri(
+            &"https://github.com/Elcapitanoe/PIF-Config-Generator/releases/expanded_assets/v2026.10.03"
+                .parse()
+                .unwrap(),
+            &assets
+        ));
+        assert!(!is_allowed_feed_uri(
+            &"https://github.com/Elcapitanoe/PIF-Config-Generator/releases/expanded_assets/v../10.11"
+                .parse()
+                .unwrap(),
+            &assets
+        ));
+    }
+
+    #[test]
+    fn asset_names_are_extracted_from_the_expanded_assets_fragment() {
+        let html = r#"
+            <a href="/Elcapitanoe/PIF-Config-Generator/releases/download/v2026.10.11/Akita_CP3A.261005.005.json">Akita</a>
+            <a href="/Elcapitanoe/PIF-Config-Generator/releases/download/v2026.10.11/Oriole_CP3A.261005.002.A1.json">Oriole</a>
+            <a href="/Elcapitanoe/PIF-Config-Generator/releases/download/v2026.10.03/Stale_CP3A.261005.001.json">Stale</a>
+            <a href="/Elcapitanoe/PIF-Config-Generator/releases/download/v2026.10.11/notes.txt">notes</a>
+        "#;
+        let names = parse_asset_names(html, "v2026.10.11");
+        assert_eq!(
+            names,
+            vec![
+                "Akita_CP3A.261005.005.json".to_string(),
+                "Oriole_CP3A.261005.002.A1.json".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn atom_feed_yields_the_newest_valid_tag() {
+        let body = r#"<?xml version="1.0" encoding="UTF-8"?>
+            <feed><entry><id>tag:github.com,2008:Repository/1/v2026.10.11</id>
+            <link href="https://github.com/Elcapitanoe/PIF-Config-Generator/releases/tag/v2026.10.11"/></entry>
+            <entry><id>tag:github.com,2008:Repository/1/v2026.10.03</id></entry></feed>"#;
+        assert_eq!(atom_first_tag(body).unwrap(), "v2026.10.11");
+        assert!(atom_first_tag("no tags here").is_none());
+        assert!(atom_first_tag("releases/tag/beta").is_none());
     }
 
     #[test]

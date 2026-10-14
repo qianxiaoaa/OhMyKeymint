@@ -25,6 +25,64 @@ where
     String::from_utf8(bytes).map_err(|_| anyhow!("{} response is not UTF-8", policy.resource))
 }
 
+/// Fetch a resource whose only useful output is its redirect target, and
+/// return the raw `Location` header without following it.
+///
+/// The GitHub HTML endpoints used by the PIF feed (for example
+/// `releases/latest`) answer with a 302 to the canonical tag URL. Reading that
+/// `Location` gives the current tag through `github.com` itself instead of the
+/// unauthenticated `api.github.com` REST API, which is limited to 60 requests
+/// per hour per IP and returns HTTP 403 once exhausted.
+pub(crate) fn fetch_redirect_location<F>(
+    requested_uri: Uri,
+    policy: &DownloadPolicy,
+    is_allowed: F,
+) -> Result<String>
+where
+    F: Fn(&Uri) -> bool,
+{
+    if !is_allowed(&requested_uri) {
+        bail!("{} URL is not allowed", policy.resource);
+    }
+
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .https_only(true)
+        .max_redirects(0)
+        .timeout_connect(Some(policy.connect_timeout))
+        .timeout_global(Some(policy.timeout))
+        .build()
+        .into();
+
+    let mut response = agent
+        .get(requested_uri)
+        .config()
+        .timeout_global(Some(policy.timeout))
+        .build()
+        .header(
+            "User-Agent",
+            concat!("OhMyKeymint/", env!("CARGO_PKG_VERSION")),
+        )
+        .header("Accept-Encoding", "identity")
+        .call()
+        .with_context(|| format!("failed to download the {}", policy.resource))?;
+
+    if !response.status().is_redirection() {
+        bail!(
+            "{} did not redirect (HTTP status {})",
+            policy.resource,
+            response.status()
+        );
+    }
+
+    let location = response
+        .headers()
+        .get("location")
+        .ok_or_else(|| anyhow!("{} redirect has no Location header", policy.resource))?
+        .to_str()
+        .with_context(|| format!("{} redirect Location is not valid UTF-8", policy.resource))?;
+    Ok(location.to_string())
+}
+
 pub(crate) fn download_https_bytes<F>(
     requested_uri: Uri,
     policy: &DownloadPolicy,

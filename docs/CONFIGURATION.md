@@ -279,9 +279,11 @@ downloads the latest GitHub Release from
 `Elcapitanoe/PIF-Config-Generator`, then downloads each validated JSON profile
 asset from that release. The upstream generator compiles Pixel build properties
 into extended PIF JSON profiles. The helper first tries `https://gh-proxy.com/`
-in front of the exact GitHub API and release-download URLs, then the same GitHub
-URLs directly. It does not run the upstream generator and does not require a
-device-provided `curl`, `wget`, or shell download tool.
+in front of the exact GitHub release metadata and release-download URLs, then
+the same GitHub URLs directly. The current release tag is read from the
+`github.com` release page redirect rather than the rate-limited REST API. It does
+not run the upstream generator and does not require a device-provided `curl`,
+`wget`, or shell download tool.
 
 The native helper accepts only the fixed feed paths, validates every catalog
 entry, reads `FINGERPRINT`, `MANUFACTURER`, `MODEL`, and `SECURITY_PATCH` from
